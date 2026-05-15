@@ -1,4 +1,5 @@
 import { cleanTextForPrompt } from "../utils/fs.js";
+import { resolveLlmSettings } from "./runtime.js";
 
 function withTimeout(ms) {
   const controller = new AbortController();
@@ -32,14 +33,15 @@ export function resolveChatCompletionsUrl(endpoint) {
 }
 
 export async function chatCompletion(config, messages, overrides = {}) {
-  const endpoint = process.env[config.llm.endpoint_env] || "";
-  const apiKey = process.env[config.llm.api_key_env] || "";
-  const model = process.env[config.llm.model_env] || config.llm.default_model;
+  const llm = resolveLlmSettings(config, process.env);
+  const endpoint = llm.endpoint;
+  const apiKey = llm.apiKey;
+  const model = llm.model;
 
   if (!endpoint || !apiKey) {
     return {
       ok: false,
-      error: `Missing env ${config.llm.endpoint_env} or ${config.llm.api_key_env}`,
+      error: `Missing LLM endpoint or API key. Set ${llm.endpointEnvNames[0]} / ${llm.apiKeyEnvNames[0]} or save llm.endpoint / llm.api_key in .openvila/config.yaml`,
     };
   }
 

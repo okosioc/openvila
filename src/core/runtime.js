@@ -6,6 +6,9 @@ import { detectLocaleFromEnv } from "../i18n/messages.js";
 import { ensureDir, exists } from "../utils/fs.js";
 
 export const OPENVILA_DIR_NAME = ".openvila";
+export const LLM_ENDPOINT_ENV_CANDIDATES = ["openvila_llm_endpoint", "OPENVILA_LLM_ENDPOINT"];
+export const LLM_API_KEY_ENV_CANDIDATES = ["openvila_llm_api_key", "OPENVILA_LLM_API_KEY"];
+export const LLM_MODEL_ENV_CANDIDATES = ["openvila_llm_model", "OPENVILA_LLM_MODEL"];
 
 function runtimeGitignoreTemplate() {
   return [
@@ -50,9 +53,12 @@ export function defaultConfig() {
     version: 1,
     language: detectLocaleFromEnv(),
     llm: {
-      endpoint_env: "LLM_ENDPOINT",
-      api_key_env: "LLM_API_KEY",
-      model_env: "LLM_MODEL",
+      endpoint_env: "openvila_llm_endpoint",
+      api_key_env: "openvila_llm_api_key",
+      model_env: "openvila_llm_model",
+      endpoint: "",
+      api_key: "",
+      model: "",
       default_model: "deepseek-chat",
       timeout_ms: 45000,
     },
@@ -70,6 +76,52 @@ export function defaultConfig() {
     install: {
       conservative: true,
     },
+  };
+}
+
+function uniqueNames(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0))];
+}
+
+function firstEnvValue(env, names) {
+  for (const name of names) {
+    const value = String(env[name] || "").trim();
+    if (value) {
+      return {
+        name,
+        value,
+      };
+    }
+  }
+  return null;
+}
+
+export function resolveLlmSettings(config, env = {}) {
+  const llm = config?.llm || {};
+  const endpointEnvNames = uniqueNames([...LLM_ENDPOINT_ENV_CANDIDATES, llm.endpoint_env]);
+  const apiKeyEnvNames = uniqueNames([...LLM_API_KEY_ENV_CANDIDATES, llm.api_key_env]);
+  const modelEnvNames = uniqueNames([...LLM_MODEL_ENV_CANDIDATES, llm.model_env]);
+
+  const endpointFromEnv = firstEnvValue(env, endpointEnvNames);
+  const apiKeyFromEnv = firstEnvValue(env, apiKeyEnvNames);
+  const modelFromEnv = firstEnvValue(env, modelEnvNames);
+
+  const endpointFromConfig = String(llm.endpoint || "").trim();
+  const apiKeyFromConfig = String(llm.api_key || "").trim();
+  const modelFromConfig = String(llm.model || "").trim();
+  const defaultModel = String(llm.default_model || "deepseek-chat").trim() || "deepseek-chat";
+
+  return {
+    endpoint: endpointFromEnv?.value || endpointFromConfig || "",
+    apiKey: apiKeyFromEnv?.value || apiKeyFromConfig || "",
+    model: modelFromEnv?.value || modelFromConfig || defaultModel,
+    endpointFromEnv: endpointFromEnv?.name || "",
+    apiKeyFromEnv: apiKeyFromEnv?.name || "",
+    modelFromEnv: modelFromEnv?.name || "",
+    endpointEnvNames,
+    apiKeyEnvNames,
+    modelEnvNames,
+    modelFromConfig,
   };
 }
 

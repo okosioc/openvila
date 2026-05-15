@@ -20,6 +20,21 @@ npm install -g openvila
 Then in your website source directory:
 
 ```bash
+openvila
+# or openvila ui
+```
+
+In the Ink manager UI, use the keyboard to manage OpenVila:
+- header: ASCII logo + version + runtime status
+- bottom line: input prompt for text and commands
+- press Enter: submit input and show response/logs
+- commands must start with `/`, for example `/init`, `/scan`, `/install --apply`
+- when input starts with `/`, the UI shows command suggestions in real time
+- quit with `/exit` or `Ctrl+C`
+
+You can still run direct commands:
+
+```bash
 openvila init
 openvila scan
 openvila install --apply
@@ -56,6 +71,7 @@ node src/index.js run --port 3800
 ## Commands
 
 ```bash
+/ui
 /init [--force]
 /scan
 /install [--apply] [--all] [--attach-start]
@@ -109,12 +125,18 @@ my-website/
 OpenVila does not proxy model requests. It calls your endpoint directly:
 
 ```bash
-export LLM_ENDPOINT="https://your-llm-endpoint"
-export LLM_API_KEY="your-api-key"
-export LLM_MODEL="deepseek-chat"  # optional
+export openvila_llm_endpoint="https://your-llm-endpoint"
+export openvila_llm_api_key="your-api-key"
+export openvila_llm_model="deepseek-chat"  # optional
 ```
 
-`LLM_ENDPOINT` can be either:
+When CLI starts, it checks:
+- whether `.openvila/` exists (if missing, it asks for `y/n`; `y` creates runtime, `n` exits)
+- whether `openvila_llm_endpoint`, `openvila_llm_api_key`, and `openvila_llm_model` are available (env first, then config)
+
+If missing and you are in TTY, OpenVila asks for input and saves values into `.openvila/config.yaml`.
+
+`openvila_llm_endpoint` can be either:
 - full path (for example `.../v1/chat/completions`)
 - base URL (OpenVila will append `/v1/chat/completions`)
 
