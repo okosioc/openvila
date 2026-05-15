@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Flask Demo{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header>
+    <nav>
+      <a class="brand" href="{{ url_for('index') }}">Flask Demo</a>
+      <div class="links">
+        <a class="{% if active == 'home' %}active{% endif %}" href="{{ url_for('index') }}">Home</a>
+        <a class="{% if active == 'pricing' %}active{% endif %}" href="{{ url_for('pricing') }}">Pricing</a>
+        <a class="{% if active == 'faq' %}active{% endif %}" href="{{ url_for('faq') }}">FAQ</a>
+        <a class="{% if active == 'agreement' %}active{% endif %}" href="{{ url_for('user_agreement') }}">User Agreement</a>
+        <a class="{% if active == 'privacy' %}active{% endif %}" href="{{ url_for('privacy_policy') }}">Privacy</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="card">
+      {% block content %}{% endblock %}
+    </section>
+  </main>
+</body>
+</html>

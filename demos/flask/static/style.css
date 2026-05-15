@@ -1,0 +1,84 @@
+:root {
+  --bg: #f4f8ff;
+  --text: #0f172a;
+  --muted: #475569;
+  --line: #dbeafe;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  background: linear-gradient(135deg, #eef4ff, #f2fff7);
+  color: var(--text);
+}
+
+header {
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid var(--line);
+}
+
+nav {
+  width: min(980px, 92vw);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+}
+
+nav .brand {
+  text-decoration: none;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+nav .links a {
+  margin-left: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+
+nav .links a.active,
+nav .links a:hover {
+  background: #e0f2fe;
+  color: #075985;
+}
+
+main {
+  width: min(980px, 92vw);
+  margin: 28px auto 48px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.06);
+}
+
+.card p,
+.card li {
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.plan {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+}

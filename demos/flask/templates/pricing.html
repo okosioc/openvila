@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% set active = 'pricing' %}
+{% block title %}Pricing - Flask Demo{% endblock %}
+{% block content %}
+<h1>Pricing</h1>
+<p>All prices are monthly and billed in USD.</p>
+<ul>
+  <li>Starter: $19/month, 5,000 messages, 1 website.</li>
+  <li>Growth: $49/month, 30,000 messages, 3 websites.</li>
+  <li>Business: $129/month, 120,000 messages, 10 websites.</li>
+</ul>
+<p>Refund policy: full refund within 7 days for first-time purchases.</p>
+{% endblock %}

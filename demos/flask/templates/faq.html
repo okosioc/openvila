@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% set active = 'faq' %}
+{% block title %}FAQ - Flask Demo{% endblock %}
+{% block content %}
+<h1>FAQ</h1>
+<h3>How do I initialize OpenVila?</h3>
+<p>Run <code>openvila init</code> in this Flask demo directory first.</p>
+
+<h3>Can users execute actions directly?</h3>
+<p>No. Action requests enter a pending queue and require owner approval.</p>
+
+<h3>Can I use my own LLM service?</h3>
+<p>Yes. Set <code>LLM_ENDPOINT</code> and <code>LLM_API_KEY</code>.</p>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% set active = 'home' %}
+{% block title %}Home - Flask Demo{% endblock %}
+{% block content %}
+<h1>Flask Demo for OpenVila</h1>
+<p>This sample app includes policy and pricing pages for knowledge scanning tests.</p>
+<div class="grid">
+  <article class="plan">
+    <h3>Policy Pages</h3>
+    <p>User Agreement and Privacy Policy are available under dedicated routes.</p>
+  </article>
+  <article class="plan">
+    <h3>Pricing</h3>
+    <p>Three plan tiers can be referenced by the assistant.</p>
+  </article>
+  <article class="plan">
+    <h3>Support</h3>
+    <p>FAQ includes setup and billing questions.</p>
+  </article>
+</div>
+{% endblock %}

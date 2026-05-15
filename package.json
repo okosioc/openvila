@@ -1,0 +1,33 @@
+{
+  "name": "openvila",
+  "version": "0.1.0",
+  "description": "OpenVila CLI for independent site owners",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "openvila": "src/index.js"
+  },
+  "scripts": {
+    "start": "node ./src/index.js",
+    "lint": "node -e \"console.log('No lint configured')\"",
+    "prepublishOnly": "npm pack --dry-run"
+  },
+  "keywords": [
+    "openvila",
+    "repl",
+    "knowledge-base",
+    "site-owner"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  }
+}

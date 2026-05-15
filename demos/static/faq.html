@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FAQ - Static Demo</title>
+  <link rel="stylesheet" href="./assets/style.css" />
+</head>
+<body>
+  <header>
+    <div class="nav-wrap">
+      <a class="brand" href="./index.html">Static Demo</a>
+      <nav>
+        <a href="./index.html">Home</a>
+        <a href="./pricing.html">Pricing</a>
+        <a class="active" href="./faq.html">FAQ</a>
+        <a href="./user-agreement.html">User Agreement</a>
+        <a href="./privacy-policy.html">Privacy</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h1>FAQ</h1>
+      <h3>How do I start OpenVila?</h3>
+      <p>Run <code>openvila init</code>, then <code>openvila scan</code>, then <code>openvila run</code>.</p>
+
+      <h3>Can users run actions directly?</h3>
+      <p>No. Users can request actions, but each request must be approved by the owner.</p>
+
+      <h3>Can I bring my own model endpoint?</h3>
+      <p>Yes. Set <code>LLM_ENDPOINT</code> and <code>LLM_API_KEY</code> in your environment.</p>
+
+      <h3>Is multilingual Q&A supported?</h3>
+      <p>Yes. The assistant can answer in the user's language based on the knowledge source.</p>
+    </section>
+  </main>
+</body>
+</html>
