@@ -114,6 +114,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
   const [inputValue, setInputValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState(null);
+  const [cursorVisible, setCursorVisible] = useState(true);
   const inputRef = useRef("");
   const pendingQuestionRef = useRef(null);
   const pendingResolverRef = useRef(null);
@@ -163,6 +164,15 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
   useEffect(() => {
     pendingQuestionRef.current = pendingQuestion;
   }, [pendingQuestion]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCursorVisible((prev) => !prev);
+    }, 500);
+    return () => {
+      clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -330,6 +340,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
   });
 
   const prompt = busy && !pendingQuestion ? pick(ctx.locale, "...", "...") : ">";
+  const cursor = cursorVisible ? "▌" : " ";
 
   return h(
     Box,
@@ -393,6 +404,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
         null,
         h(Text, { color: "yellow" }, `${prompt} `),
         h(Text, null, inputValue),
+        h(Text, { color: "yellow" }, cursor),
       ),
     ),
   );
