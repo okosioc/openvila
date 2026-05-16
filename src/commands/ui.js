@@ -113,8 +113,16 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
   const [logs, setLogs] = useState([]);
   const [inputValue, setInputValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingQuestion, setPendingQuestion] = useState(null);
   const inputRef = useRef("");
-  const suggestions = useMemo(() => filteredSuggestions(ctx.locale, inputValue), [ctx.locale, inputValue]);
+  const pendingQuestionRef = useRef(null);
+  const pendingResolverRef = useRef(null);
+  const suggestions = useMemo(() => {
+    if (pendingQuestion) {
+      return [];
+    }
+    return filteredSuggestions(ctx.locale, inputValue);
+  }, [ctx.locale, inputValue, pendingQuestion]);
 
   const appendLog = useCallback((text) => {
     const lines = splitLogLines(text);
@@ -130,11 +138,31 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
     setRuntimeReady(Boolean(ready));
   }, [ctx.cwd]);
 
+  const askInUi = useCallback(
+    async (promptText) =>
+      new Promise((resolve) => {
+        const normalized = String(promptText || "")
+          .replace(/\s+/g, " ")
+          .trim();
+        setPendingQuestion(normalized || pick(ctx.locale, "请输入", "Please enter"));
+        pendingResolverRef.current = (answer) => {
+          resolve(String(answer || ""));
+        };
+        setInputValue("");
+        inputRef.current = "";
+      }),
+    [ctx.locale],
+  );
+
   const headerLines = useMemo(() => ASCII_LOGO, []);
 
   useEffect(() => {
     inputRef.current = inputValue;
   }, [inputValue]);
+
+  useEffect(() => {
+    pendingQuestionRef.current = pendingQuestion;
+  }, [pendingQuestion]);
 
   useEffect(() => {
     (async () => {
@@ -193,9 +221,13 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
 
       setBusy(true);
       try {
-        const keepRunning = await executeTokens(tokens, (text) => {
-          appendLog(text);
-        });
+        const keepRunning = await executeTokens(
+          tokens,
+          (text) => {
+            appendLog(text);
+          },
+          askInUi,
+        );
 
         if (keepRunning === false) {
           onExit();
@@ -209,17 +241,19 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
         setBusy(false);
       }
     },
-    [appendLog, ctx.locale, executeTokens, exit, onExit, refreshRuntime],
+    [appendLog, askInUi, ctx.locale, executeTokens, exit, onExit, refreshRuntime],
   );
 
   useInput((input, key) => {
+    const activeQuestion = pendingQuestionRef.current;
+
     if (key.ctrl && input === "c") {
       onExit();
       exit();
       return;
     }
 
-    if (busy) {
+    if (busy && !activeQuestion) {
       return;
     }
 
@@ -227,6 +261,19 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
       const value = inputRef.current;
       setInputValue("");
       inputRef.current = "";
+
+      if (activeQuestion) {
+        appendLog(`${activeQuestion} ${value}`.trimEnd());
+        const resolve = pendingResolverRef.current;
+        pendingResolverRef.current = null;
+        pendingQuestionRef.current = null;
+        setPendingQuestion(null);
+        if (typeof resolve === "function") {
+          resolve(value);
+        }
+        return;
+      }
+
       submitLine(value).catch(() => undefined);
       return;
     }
@@ -282,7 +329,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
     }
   });
 
-  const prompt = busy ? pick(ctx.locale, "...", "...") : ">";
+  const prompt = busy && !pendingQuestion ? pick(ctx.locale, "...", "...") : ">";
 
   return h(
     Box,
@@ -338,9 +385,15 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
         borderStyle: "single",
         borderColor: "yellow",
         paddingX: 1,
+        flexDirection: "column",
       },
-      h(Text, { color: "yellow" }, `${prompt} `),
-      h(Text, null, inputValue),
+      pendingQuestion ? h(Text, { color: "yellow" }, pendingQuestion) : null,
+      h(
+        Box,
+        null,
+        h(Text, { color: "yellow" }, `${prompt} `),
+        h(Text, null, inputValue),
+      ),
     ),
   );
 }

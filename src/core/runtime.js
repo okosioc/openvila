@@ -59,7 +59,6 @@ export function defaultConfig() {
       endpoint: "",
       api_key: "",
       model: "",
-      default_model: "deepseek-chat",
       timeout_ms: 45000,
     },
     channels: {
@@ -68,6 +67,13 @@ export function defaultConfig() {
     },
     marketplace: {
       endpoint: "https://openvila.com/api/v1",
+    },
+    scan: {
+      llm_candidate_limit: 420,
+      llm_extract_batch_chars: 100000,
+      llm_extract_topic_chars: 18000,
+      llm_extract_topic_max_docs: 18,
+      llm_extract_max_tokens: 4200,
     },
     run: {
       port: 3800,
@@ -109,12 +115,11 @@ export function resolveLlmSettings(config, env = {}) {
   const endpointFromConfig = String(llm.endpoint || "").trim();
   const apiKeyFromConfig = String(llm.api_key || "").trim();
   const modelFromConfig = String(llm.model || "").trim();
-  const defaultModel = String(llm.default_model || "deepseek-chat").trim() || "deepseek-chat";
 
   return {
     endpoint: endpointFromEnv?.value || endpointFromConfig || "",
     apiKey: apiKeyFromEnv?.value || apiKeyFromConfig || "",
-    model: modelFromEnv?.value || modelFromConfig || defaultModel,
+    model: modelFromEnv?.value || modelFromConfig || "",
     endpointFromEnv: endpointFromEnv?.name || "",
     apiKeyFromEnv: apiKeyFromEnv?.name || "",
     modelFromEnv: modelFromEnv?.name || "",

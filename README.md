@@ -73,7 +73,7 @@ node src/index.js run --port 3800
 ```bash
 /ui
 /init [--force]
-/scan
+/scan [--yes] [--dry-run] [--no-filesystem] [--no-db] [--no-remote]
 /install [--apply] [--all] [--attach-start]
 /action list
 /action create do_complaint
@@ -92,6 +92,33 @@ openvila init
 openvila scan
 openvila run
 ```
+
+## Human-In-Loop Scan
+
+`/scan` uses a human-in-loop workflow:
+1. detect framework (`package.json` / `requirements.txt` / `composer.json` / etc.)
+2. identify knowledge files and key files (LLM-only)
+3. show scan scope for owner confirmation
+4. scan selected sources (filesystem / configured DB queries / optional sitemap)
+5. aggregate topics into `knowledges/topics/*.md` (LLM-only)
+6. generate `knowledges/index.md`
+7. write `knowledges/manifest.json`
+8. print summary
+
+`/scan` requires working LLM settings: `openvila_llm_endpoint`, `openvila_llm_api_key`, `openvila_llm_model`.
+
+Output semantics:
+- `knowledges/topics/*.md`: LLM-extracted knowledge (not raw source dumps)
+- `knowledges/raw/*.txt`: raw source snapshots used for traceability/audit
+- topic extraction is batched by prompt size (`scan.llm_extract_batch_chars`, default `100000`)
+- command/scan logs are written to daily rotated logs: `.openvila/logs/openvila-YYYY-MM-DD.log`
+- each LLM call logs request input and response output to the same daily log file
+
+Useful flags:
+- `--dry-run`: preview plan only, no writes
+- `--yes`: skip interactive confirmation and use defaults
+- `--no-db`: skip configured database queries
+- `--no-remote`: skip sitemap crawling
 
 ## Runtime Directory
 
@@ -127,11 +154,11 @@ OpenVila does not proxy model requests. It calls your endpoint directly:
 ```bash
 export openvila_llm_endpoint="https://your-llm-endpoint"
 export openvila_llm_api_key="your-api-key"
-export openvila_llm_model="deepseek-chat"  # optional
+export openvila_llm_model="deepseek-chat"
 ```
 
 When CLI starts, it checks:
-- whether `.openvila/` exists (if missing, it asks for `y/n`; `y` creates runtime, `n` exits)
+- whether `.openvila/` exists (if missing, it asks for `Y/n`; default is `Y` to create runtime)
 - whether `openvila_llm_endpoint`, `openvila_llm_api_key`, and `openvila_llm_model` are available (env first, then config)
 
 If missing and you are in TTY, OpenVila asks for input and saves values into `.openvila/config.yaml`.

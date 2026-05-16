@@ -11,6 +11,7 @@ import { runRun } from "./commands/run.js";
 import { runScan } from "./commands/scan.js";
 import { runUi } from "./commands/ui.js";
 import { runVila } from "./commands/vila.js";
+import { createRuntimeFileLogger, setGlobalLogWriter } from "./core/logging.js";
 import {
   initializeRuntime,
   loadConfig,
@@ -100,6 +101,9 @@ async function createContext(cwd) {
   return {
     cwd,
     locale,
+    logFilePath: "",
+    fileLog: null,
+    flushLogs: async () => undefined,
     log: (text) => {
       process.stdout.write(`${String(text)}\n`);
     },
@@ -125,8 +129,8 @@ function missingRuntimeDirMessage(locale) {
 function runtimeConfirmCreatePrompt(locale, dirPath) {
   return pick(
     locale,
-    `是否现在创建运行目录？[y/N]\n${dirPath}\n> `,
-    `Create runtime directory now? [y/N]\n${dirPath}\n> `,
+    `是否现在创建运行目录？[Y/n]\n${dirPath}\n> `,
+    `Create runtime directory now? [Y/n]\n${dirPath}\n> `,
   );
 }
 
@@ -155,14 +159,12 @@ function missingLlmConfigHint(locale, endpointEnv, apiKeyEnv, modelEnv, configPa
     locale,
     [
       "检测到 LLM 配置不完整。",
-      `可通过环境变量设置: ${endpointEnv} / ${apiKeyEnv}`,
-      `模型环境变量: ${modelEnv}`,
+      `可通过环境变量设置: ${endpointEnv} / ${apiKeyEnv} / ${modelEnv}`,
       `也可以将其写入配置文件: ${configPath}`,
     ].join("\n"),
     [
       "LLM configuration is incomplete.",
-      `Set environment vars: ${endpointEnv} / ${apiKeyEnv}`,
-      `Model env var: ${modelEnv}`,
+      `Set environment vars: ${endpointEnv} / ${apiKeyEnv} / ${modelEnv}`,
       `Or save values into config file: ${configPath}`,
     ].join("\n"),
   );
@@ -198,7 +200,7 @@ function isYes(answer) {
   const normalized = String(answer || "")
     .trim()
     .toLowerCase();
-  return normalized === "y" || normalized === "yes";
+  return normalized === "" || normalized === "y" || normalized === "yes";
 }
 
 async function promptAndSaveLlmConfig(ctx, config) {
@@ -361,6 +363,32 @@ async function runStartupChecks(ctx) {
   return true;
 }
 
+async function enableRuntimeLogging(ctx) {
+  try {
+    const logger = await createRuntimeFileLogger(ctx.cwd);
+    const stdoutLog = ctx.log;
+
+    ctx.logFilePath = logger.logFilePath;
+    ctx.fileLog = (text) => logger.append(String(text ?? ""));
+    ctx.flushLogs = async () => {
+      await logger.flush();
+    };
+    ctx.log = (text) => {
+      const line = String(text ?? "");
+      stdoutLog(line);
+      ctx.fileLog(line);
+    };
+
+    setGlobalLogWriter((text) => {
+      if (typeof ctx.fileLog === "function") {
+        ctx.fileLog(text);
+      }
+    });
+  } catch {
+    setGlobalLogWriter(null);
+  }
+}
+
 async function executeCommand(ctx, tokens) {
   if (!tokens || tokens.length === 0) {
     return true;
@@ -387,7 +415,7 @@ async function executeCommand(ctx, tokens) {
     const version = await cliVersion();
     await runUi(ctx, {
       version,
-      executeTokens: (innerTokens, logger) => executeWithLogger(ctx, innerTokens, logger),
+      executeTokens: (innerTokens, logger, asker) => executeWithLogger(ctx, innerTokens, logger, asker),
     });
     return true;
   }
@@ -449,17 +477,31 @@ async function executeCommand(ctx, tokens) {
   return true;
 }
 
-async function executeWithLogger(ctx, tokens, logger) {
-  if (typeof logger !== "function") {
+async function executeWithLogger(ctx, tokens, logger, asker) {
+  if (typeof logger !== "function" && typeof asker !== "function") {
     return executeCommand(ctx, tokens);
   }
 
   const originalLog = ctx.log;
-  ctx.log = logger;
+  const originalAsk = ctx.ask;
+  const fileLog = ctx.fileLog;
+  if (typeof logger === "function") {
+    ctx.log = (text) => {
+      const line = String(text ?? "");
+      logger(line);
+      if (typeof fileLog === "function") {
+        fileLog(line);
+      }
+    };
+  }
+  if (typeof asker === "function") {
+    ctx.ask = asker;
+  }
   try {
     return await executeCommand(ctx, tokens);
   } finally {
     ctx.log = originalLog;
+    ctx.ask = originalAsk;
   }
 }
 
@@ -498,19 +540,26 @@ async function main() {
   const ctx = await createContext(cwd);
   const canContinue = await runStartupChecks(ctx);
   if (!canContinue) {
+    setGlobalLogWriter(null);
     return;
   }
+  await enableRuntimeLogging(ctx);
 
   const rawArgs = process.argv.slice(2);
   if (rawArgs.length === 0) {
-    if (process.stdin.isTTY && process.stdout.isTTY) {
-      const version = await cliVersion();
-      await runUi(ctx, {
-        version,
-        executeTokens: (tokens, logger) => executeWithLogger(ctx, tokens, logger),
-      });
-    } else {
-      await runFallbackRepl(ctx);
+    try {
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        const version = await cliVersion();
+        await runUi(ctx, {
+          version,
+          executeTokens: (tokens, logger, asker) => executeWithLogger(ctx, tokens, logger, asker),
+        });
+      } else {
+        await runFallbackRepl(ctx);
+      }
+    } finally {
+      await ctx.flushLogs().catch(() => undefined);
+      setGlobalLogWriter(null);
     }
     return;
   }
@@ -520,10 +569,14 @@ async function main() {
   } catch (error) {
     ctx.log(pick(ctx.locale, `执行失败: ${error.message}`, `Failed: ${error.message}`));
     process.exitCode = 1;
+  } finally {
+    await ctx.flushLogs().catch(() => undefined);
+    setGlobalLogWriter(null);
   }
 }
 
 main().catch((error) => {
+  setGlobalLogWriter(null);
   process.stderr.write(`${error.stack || error.message}\n`);
   process.exit(1);
 });

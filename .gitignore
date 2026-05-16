@@ -10,5 +10,7 @@ pnpm-debug.log*
 .env.*
 .idea/
 .vscode/
+demos/static/.openvila/
+demos/flask/.openvila/
 demos/flask/.venv/
 .npm-cache/

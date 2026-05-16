@@ -106,7 +106,7 @@ async function selectTopics(cwd, config, index, question) {
     },
   ];
 
-  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 140 });
+  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 140, trace: "chat:topic_select" });
   if (picked.ok) {
     const maybe = extractJsonObject(picked.content);
     if (maybe && Array.isArray(maybe.topic_ids)) {
@@ -154,7 +154,7 @@ async function answerFromKnowledge(cwd, config, message) {
     },
   ];
 
-  const completion = await chatCompletion(config, messages, { temperature: 0.35, maxTokens: 900 });
+  const completion = await chatCompletion(config, messages, { temperature: 0.35, maxTokens: 900, trace: "chat:answer" });
   if (!completion.ok) {
     return { ok: false, error: completion.error };
   }
