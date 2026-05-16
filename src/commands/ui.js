@@ -131,7 +131,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
       return;
     }
 
-    setLogs((prev) => [...prev, ...lines].slice(-22));
+    setLogs((prev) => [...prev, ...lines]);
   }, []);
 
   const refreshRuntime = useCallback(async () => {

@@ -17,21 +17,24 @@ function formatLocalDateTime(date = new Date()) {
   return `${formatLocalDate(date)} ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}:${twoDigits(date.getSeconds())}`;
 }
 
-export function runtimeDailyLogPath(cwd, date = new Date()) {
+export function runtimeDailyLogPath(cwd, date = new Date(), prefix = "openvila") {
   const paths = runtimePaths(cwd);
-  return path.join(paths.logs, `openvila-${formatLocalDate(date)}.log`);
+  return path.join(paths.logs, `${prefix}-${formatLocalDate(date)}.log`);
 }
 
-export async function createRuntimeFileLogger(cwd) {
+export async function createRuntimeFileLogger(cwd, options = {}) {
   const paths = runtimePaths(cwd);
   await ensureDir(paths.logs);
+  const prefix = String(options.prefix || "openvila")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "-") || "openvila";
 
   let writeQueue = Promise.resolve();
   let writeErrorPrinted = false;
 
   function append(text) {
     const now = new Date();
-    const target = runtimeDailyLogPath(cwd, now);
+    const target = runtimeDailyLogPath(cwd, now, prefix);
     const stamp = formatLocalDateTime(now);
     const body = String(text ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     const payload = body.endsWith("\n") ? `[${stamp}] ${body}` : `[${stamp}] ${body}\n`;
@@ -46,7 +49,7 @@ export async function createRuntimeFileLogger(cwd) {
   }
 
   return {
-    logFilePath: runtimeDailyLogPath(cwd),
+    logFilePath: runtimeDailyLogPath(cwd, new Date(), prefix),
     append,
     async flush() {
       await writeQueue;

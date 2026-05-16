@@ -19,7 +19,6 @@ function runtimeGitignoreTemplate() {
     "*.pyc",
     "*.pyo",
     "*.pyd",
-    "knowledges/raw/",
     "",
   ].join("\n");
 }
@@ -31,8 +30,7 @@ export function runtimePaths(cwd) {
     config: path.join(base, "config.yaml"),
     runtimeGitignore: path.join(base, ".gitignore"),
     knowledges: path.join(base, "knowledges"),
-    knowledgeTopics: path.join(base, "knowledges", "topics"),
-    knowledgeRaw: path.join(base, "knowledges", "raw"),
+    knowledgeDocs: path.join(base, "knowledges", "docs"),
     actions: path.join(base, "actions"),
     vilas: path.join(base, "vilas"),
     logs: path.join(base, "logs"),
@@ -70,10 +68,9 @@ export function defaultConfig() {
     },
     scan: {
       llm_candidate_limit: 420,
-      llm_extract_batch_chars: 100000,
-      llm_extract_topic_chars: 18000,
-      llm_extract_topic_max_docs: 18,
-      llm_extract_max_tokens: 4200,
+      llm_compile_batch_chars: 100000,
+      llm_compile_doc_chars: 18000,
+      llm_compile_max_tokens: 4800,
     },
     run: {
       port: 3800,
@@ -137,8 +134,7 @@ function notInitializedError() {
 async function ensureRuntimeDirectories(paths) {
   await ensureDir(paths.base);
   await ensureDir(paths.knowledges);
-  await ensureDir(paths.knowledgeTopics);
-  await ensureDir(paths.knowledgeRaw);
+  await ensureDir(paths.knowledgeDocs);
   await ensureDir(paths.actions);
   await ensureDir(paths.vilas);
   await ensureDir(paths.logs);

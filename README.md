@@ -73,7 +73,7 @@ node src/index.js run --port 3800
 ```bash
 /ui
 /init [--force]
-/scan [--yes] [--dry-run] [--no-filesystem] [--no-db] [--no-remote]
+/scan [--yes] [--dry-run] [--reset] [--no-filesystem] [--no-db] [--no-remote]
 /install [--apply] [--all] [--attach-start]
 /action list
 /action create do_complaint
@@ -96,26 +96,28 @@ openvila run
 ## Human-In-Loop Scan
 
 `/scan` uses a human-in-loop workflow:
-1. detect framework (`package.json` / `requirements.txt` / `composer.json` / etc.)
-2. identify knowledge files and key files (LLM-only)
-3. show scan scope for owner confirmation
-4. scan selected sources (filesystem / configured DB queries / optional sitemap)
-5. aggregate topics into `knowledges/topics/*.md` (LLM-only)
-6. generate `knowledges/index.md`
-7. write `knowledges/manifest.json`
-8. print summary
+1. LLM identifies framework and knowledge files from candidate file list
+2. show scan scope for owner confirmation
+3. scan selected sources (filesystem / configured DB queries / optional sitemap)
+4. default incremental diff (`added/changed/deleted/unchanged`) by source hash, unless `--reset`, then LLM batch-compiles only `added/changed` sources into `knowledges/docs/*.md` (including `is_frequently_asked`)
+5. update/remove compiled docs for changed/deleted sources, then regenerate `knowledges/index.md` from `index_map` every run:
+   - first section lists only frequent customer concern docs
+   - all sections are sorted by `docs/*` file name
+6. write `knowledges/manifest.json` and print summary
 
 `/scan` requires working LLM settings: `openvila_llm_endpoint`, `openvila_llm_api_key`, `openvila_llm_model`.
 
 Output semantics:
-- `knowledges/topics/*.md`: LLM-extracted knowledge (not raw source dumps)
-- `knowledges/raw/*.txt`: raw source snapshots used for traceability/audit
-- topic extraction is batched by prompt size (`scan.llm_extract_batch_chars`, default `100000`)
-- command/scan logs are written to daily rotated logs: `.openvila/logs/openvila-YYYY-MM-DD.log`
+- `knowledges/docs/*.md`: one compiled markdown doc per source file/row/page
+- `knowledges/index.md`: index with `Frequent Customer Concerns` + `All Documents`
+- `knowledges/manifest.json`: source hashes, doc map, `index_map`, frequent source list, llm call stats
+- doc compile batching uses `scan.llm_compile_batch_chars` (default `100000`)
+- scan logs are written to daily rotated logs: `.openvila/logs/scan-YYYY-MM-DD.log`
 - each LLM call logs request input and response output to the same daily log file
 
 Useful flags:
 - `--dry-run`: preview plan only, no writes
+- `--reset`: force full rebuild instead of incremental update
 - `--yes`: skip interactive confirmation and use defaults
 - `--no-db`: skip configured database queries
 - `--no-remote`: skip sitemap crawling
@@ -133,8 +135,7 @@ my-website/
     knowledges/
       index.md
       manifest.json
-      topics/
-      raw/
+      docs/
     actions/
       .venv/
       *.py

@@ -1,6 +1,7 @@
 import process from "node:process";
 import readline from "node:readline";
 import { buildKnowledgeBase, prepareKnowledgeScanPlan } from "../core/knowledge.js";
+import { createRuntimeFileLogger } from "../core/logging.js";
 import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
@@ -20,33 +21,30 @@ function isYes(answer, defaultYes = true) {
 
 function renderScanPlan(ctx, plan) {
   const llmAssist = plan.filesystem.llm_assist;
-  const keyFiles = plan.filesystem.key_files.slice(0, 10);
   const dbQueries = plan.database.queries.map((item) => `${item.name} (${item.sqlite_path})`).slice(0, 6);
 
   return pick(
     ctx.locale,
     [
-      "[scan] 1/8-2/8 LLM分析结果（框架识别 + 关键文件识别）",
+      "[scan] 1/6-2/6 LLM分析结果（框架识别 + 知识文件识别）",
       `- framework: ${plan.framework || "unknown"}`,
       `- 识别信号: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- LLM模型: ${llmAssist.model || "unknown"}`,
       `- LLM选择知识文件数: ${llmAssist.selected || plan.filesystem.matched_paths.length}`,
-      `- 关键文件: ${keyFiles.length > 0 ? keyFiles.join(", ") : "none"}`,
       "",
-      "[scan] 3/8 待确认扫描范围",
+      "[scan] 3/6 待确认扫描范围",
       `- 文件候选数: ${plan.filesystem.total_candidates}, 命中数: ${plan.filesystem.matched_paths.length}`,
       `- 数据库 queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
       `- 远程 sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
     [
-      "[scan] 1/8-2/8 LLM Analysis Result (framework + key files)",
+      "[scan] 1/6-2/6 LLM Analysis Result (framework + knowledge files)",
       `- framework: ${plan.framework || "unknown"}`,
       `- signals: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- LLM model: ${llmAssist.model || "unknown"}`,
       `- LLM-selected knowledge files: ${llmAssist.selected || plan.filesystem.matched_paths.length}`,
-      `- key files: ${keyFiles.length > 0 ? keyFiles.join(", ") : "none"}`,
       "",
-      "[scan] 3/8 Scan Scope To Confirm",
+      "[scan] 3/6 Scan Scope To Confirm",
       `- file candidates: ${plan.filesystem.total_candidates}, matched: ${plan.filesystem.matched_paths.length}`,
       `- database queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
       `- remote sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
@@ -110,34 +108,35 @@ async function confirmSelections(ctx, plan, defaults) {
 }
 
 export async function runScan(ctx, argv) {
+  const previousFileLog = ctx.fileLog;
+  const previousLogFilePath = ctx.logFilePath;
+  let scanFileLogger = null;
+
+  try {
+    scanFileLogger = await createRuntimeFileLogger(ctx.cwd, { prefix: "scan" });
+    ctx.fileLog = (text) => scanFileLogger.append(String(text ?? ""));
+    ctx.logFilePath = scanFileLogger.logFilePath;
+  } catch {
+    // Keep existing runtime logger when scan logger creation fails.
+  }
+
   const log = (line) => ctx.log(String(line ?? ""));
 
   try {
     const dryRun = Boolean(argv.options["dry-run"]);
     const assumeYes = Boolean(argv.options.yes);
-    const disableLlm = Boolean(argv.options["no-llm"]);
+    const reset = Boolean(argv.options.reset);
     const config = await loadConfig(ctx.cwd, { createIfMissing: false });
 
     if (typeof ctx.logFilePath === "string" && ctx.logFilePath) {
       log(pick(ctx.locale, `[scan] 日志文件: ${ctx.logFilePath}`, `[scan] Log file: ${ctx.logFilePath}`));
     }
 
-    if (disableLlm) {
-      log(
-        pick(
-          ctx.locale,
-          "[scan] 当前版本为 LLM-only 模式，不支持 --no-llm。",
-          "[scan] Current scan mode is LLM-only; --no-llm is not supported.",
-        ),
-      );
-      return;
-    }
-
     log(
       pick(
         ctx.locale,
-        "[scan] 1/8-3/8 生成扫描计划中（LLM识别框架与关键文件 + 预览扫描范围）...",
-        "[scan] 1/8-3/8 Building scan plan (LLM framework/key-file analysis + scope preview)...",
+        "[scan] 1/6-3/6 生成扫描计划中（LLM识别框架与知识文件 + 预览扫描范围）...",
+        "[scan] 1/6-3/6 Building scan plan (LLM framework/knowledge-file analysis + scope preview)...",
       ),
     );
     const plan = await prepareKnowledgeScanPlan(ctx.cwd, { config });
@@ -168,8 +167,8 @@ export async function runScan(ctx, argv) {
     log(
       pick(
         ctx.locale,
-        `[scan] 4/8 开始扫描（filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote}）`,
-        `[scan] 4/8 Start scanning (filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote})`,
+        `[scan] 4/6 开始扫描（filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote}）`,
+        `[scan] 4/6 Start scanning (filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote})`,
       ),
     );
 
@@ -177,6 +176,7 @@ export async function runScan(ctx, argv) {
       config,
       plan,
       selections,
+      reset,
       log: (line) => log(`[scan] ${line}`),
     });
 
@@ -184,24 +184,30 @@ export async function runScan(ctx, argv) {
       pick(
         ctx.locale,
         [
-          "[scan] 4/8-7/8 已执行：扫描 → 聚合 topics → 生成 index.md → 写入 manifest.json",
-          "[scan] 8/8 汇总",
+          "[scan] 4/6-6/6 已执行：扫描 → 文档编译 → 更新索引 → 写入 manifest.json",
+          "[scan] 6/6 汇总",
           `- framework: ${result.framework || "unknown"}`,
           `- 扫描文档数: ${result.scanned}`,
-          `- topics: ${result.compiled}`,
+          `- 编译文档数: ${result.compiled}`,
+          `- scan_mode: ${reset ? "reset" : "incremental"}`,
+          `- changes: added=${result.changes?.added ?? 0}, changed=${result.changes?.changed ?? 0}, deleted=${result.changes?.deleted ?? 0}, unchanged=${result.changes?.unchanged ?? 0}`,
+          `- frequent_docs: ${result.changes?.frequent_doc_count ?? 0}`,
           `- source_stats: fs=${result.source_stats.filesystem}, db=${result.source_stats.database}, remote=${result.source_stats.remote}`,
-          `- llm_calls: planning=${result.llm_calls?.file_planning ?? 0}, grouping=${result.llm_calls?.topic_grouping ?? 0}, extraction_batches=${result.llm_calls?.topic_extraction_batches ?? 0}, total=${result.llm_calls?.total ?? 0}`,
+          `- llm_calls: planning=${result.llm_calls?.file_planning ?? 0}, doc_compile_batches=${result.llm_calls?.doc_compile_batches ?? 0}, total=${result.llm_calls?.total ?? 0}`,
           `- index: ${result.paths.knowledgeIndex}`,
           `- manifest: ${result.paths.knowledgeManifest}`,
         ].join("\n"),
         [
-          "[scan] 4/8-7/8 Completed: scan -> topic aggregation -> index.md -> manifest.json",
-          "[scan] 8/8 Summary",
+          "[scan] 4/6-6/6 Completed: scan -> doc compile -> index update -> manifest.json",
+          "[scan] 6/6 Summary",
           `- framework: ${result.framework || "unknown"}`,
           `- scanned docs: ${result.scanned}`,
-          `- topics: ${result.compiled}`,
+          `- compiled docs: ${result.compiled}`,
+          `- scan_mode: ${reset ? "reset" : "incremental"}`,
+          `- changes: added=${result.changes?.added ?? 0}, changed=${result.changes?.changed ?? 0}, deleted=${result.changes?.deleted ?? 0}, unchanged=${result.changes?.unchanged ?? 0}`,
+          `- frequent_docs: ${result.changes?.frequent_doc_count ?? 0}`,
           `- source_stats: fs=${result.source_stats.filesystem}, db=${result.source_stats.database}, remote=${result.source_stats.remote}`,
-          `- llm_calls: planning=${result.llm_calls?.file_planning ?? 0}, grouping=${result.llm_calls?.topic_grouping ?? 0}, extraction_batches=${result.llm_calls?.topic_extraction_batches ?? 0}, total=${result.llm_calls?.total ?? 0}`,
+          `- llm_calls: planning=${result.llm_calls?.file_planning ?? 0}, doc_compile_batches=${result.llm_calls?.doc_compile_batches ?? 0}, total=${result.llm_calls?.total ?? 0}`,
           `- index: ${result.paths.knowledgeIndex}`,
           `- manifest: ${result.paths.knowledgeManifest}`,
         ].join("\n"),
@@ -210,5 +216,11 @@ export async function runScan(ctx, argv) {
   } catch (error) {
     log(pick(ctx.locale, `[scan] 执行失败: ${error.message}`, `[scan] Failed: ${error.message}`));
     throw error;
+  } finally {
+    if (scanFileLogger) {
+      await scanFileLogger.flush().catch(() => undefined);
+    }
+    ctx.fileLog = previousFileLog;
+    ctx.logFilePath = previousLogFilePath;
   }
 }

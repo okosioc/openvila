@@ -4,7 +4,7 @@ import { URL } from "node:url";
 import { approveReviewItem, listActions, listReviewQueue, queueActionReview, rejectReviewItem } from "./actions.js";
 import { notifyChannels } from "./channels.js";
 import { extractJsonObject, chatCompletion } from "./llm.js";
-import { chooseTopicsLocally, loadKnowledgeIndex, loadTopicContents } from "./knowledge.js";
+import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
 
@@ -84,73 +84,78 @@ function getAuthToken(req) {
   return matched ? matched[1] : null;
 }
 
-async function selectTopics(cwd, config, index, question) {
-  if (!index.topics || index.topics.length === 0) {
+async function selectDocs(cwd, config, index, question) {
+  void cwd;
+  const map = index.index_map || {};
+  const entries = Object.entries(map);
+  if (entries.length === 0) {
     return [];
   }
 
-  const listing = index.topics
+  const listing = entries
     .slice(0, 220)
-    .map((topic) => `${topic.id} | ${topic.path} | ${(topic.tags || []).join(",")} | ${topic.summary}`)
+    .map(([source, item]) => `${item.doc_path} | ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
     .join("\n");
 
   const messages = [
     {
       role: "system",
       content:
-        "You are a retrieval planner. Return only JSON object like {\"topic_ids\":[\"id1\",\"id2\"]}. Choose at most 4 ids.",
+        "You are a retrieval planner. Return only JSON object like {\"doc_paths\":[\"docs/...md\"]}. Choose at most 4 doc paths.",
     },
     {
       role: "user",
-      content: `Question:\n${question}\n\nTopic index:\n${listing}`,
+      content: `Question:\n${question}\n\nDocument index:\n${listing}`,
     },
   ];
 
-  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 140, trace: "chat:topic_select" });
+  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 180, trace: "chat:doc_select" });
   if (picked.ok) {
     const maybe = extractJsonObject(picked.content);
-    if (maybe && Array.isArray(maybe.topic_ids)) {
-      const available = new Set(index.topics.map((topic) => topic.id));
-      const finalIds = maybe.topic_ids.filter((id) => available.has(id)).slice(0, 4);
-      if (finalIds.length > 0) {
-        return finalIds;
+    if (maybe && Array.isArray(maybe.doc_paths)) {
+      const available = new Set(entries.map(([, item]) => item.doc_path));
+      const finalPaths = maybe.doc_paths.filter((p) => available.has(p)).slice(0, 4);
+      if (finalPaths.length > 0) {
+        return finalPaths;
       }
     }
   }
 
-  return chooseTopicsLocally(index.topics, question, 4);
+  return entries.slice(0, 4).map(([, item]) => item.doc_path).filter(Boolean);
 }
 
 async function answerFromKnowledge(cwd, config, message) {
   const index = await loadKnowledgeIndex(cwd);
-  if (!index.topics || index.topics.length === 0) {
+  const map = index.index_map || {};
+  const entries = Object.entries(map);
+  if (entries.length === 0) {
     return {
       ok: false,
       error: "Knowledge base is empty. Run /scan first.",
     };
   }
 
-  const topicIds = await selectTopics(cwd, config, index, message);
-  const topicDocs = await loadTopicContents(cwd, topicIds);
+  const docPaths = await selectDocs(cwd, config, index, message);
+  const selectedDocs = await loadDocContents(cwd, docPaths);
 
-  const indexText = index.topics
+  const indexText = entries
     .slice(0, 300)
-    .map((topic) => `- ${topic.id}: ${topic.path} | ${(topic.tags || []).join(",")} | ${topic.summary}`)
+    .map(([source, item]) => `- ${item.doc_path}: ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
     .join("\n");
 
-  const topicsText = topicDocs
-    .map((topic) => `\n### ${topic.id}\n${topic.content}`)
+  const docsText = selectedDocs
+    .map((doc) => `\n### ${doc.doc_path}\n${doc.content}`)
     .join("\n\n");
 
   const messages = [
     {
       role: "system",
       content:
-        "You are OpenVila assistant for site owners. Use knowledge index first, then selected topics. If unsure, say what information is missing. Reply in the same language as user input.",
+        "You are OpenVila assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. Reply in the same language as user input.",
     },
     {
       role: "user",
-      content: `User question:\n${message}\n\nKnowledge index:\n${indexText}\n\nSelected topics:\n${topicsText}`,
+      content: `User question:\n${message}\n\nKnowledge index:\n${indexText}\n\nSelected documents:\n${docsText}`,
     },
   ];
 
@@ -162,7 +167,7 @@ async function answerFromKnowledge(cwd, config, message) {
   return {
     ok: true,
     answer: completion.content,
-    topic_ids: topicIds,
+    doc_paths: docPaths,
   };
 }
 
@@ -261,7 +266,7 @@ export async function startChatService(cwd, config, options = {}) {
         sendJson(res, 200, {
           ok: true,
           answer: answer.answer,
-          topic_ids: answer.topic_ids,
+          doc_paths: answer.doc_paths,
         });
         return;
       }
