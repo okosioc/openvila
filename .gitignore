@@ -13,4 +13,8 @@ pnpm-debug.log*
 demos/static/.openvila/
 demos/flask/.openvila/
 demos/flask/.venv/
+demos/wordpress/.openvila/
+demos/astro/.openvila/
+demos/astro/.astro/
+demos/hugo/.openvila/
 .npm-cache/

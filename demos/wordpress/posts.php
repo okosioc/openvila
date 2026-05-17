@@ -3,6 +3,7 @@ require_once __DIR__ . '/wp-config.php';
 
 $posts = [];
 $errorText = '';
+$errorHint = '';
 
 try {
   $hostParts = explode(':', DB_HOST, 2);
@@ -19,6 +20,11 @@ try {
   $posts = $stmt->fetchAll();
 } catch (Throwable $error) {
   $errorText = $error->getMessage();
+  if (strpos($errorText, "SQLSTATE[HY000] [2054]") !== false) {
+    $errorHint = "Auth plugin mismatch. Re-run MySQL init SQL, or execute:\n"
+      . "ALTER USER 'wordpress_user'@'%' IDENTIFIED WITH mysql_native_password BY 'wordpress_pass';\n"
+      . "FLUSH PRIVILEGES;";
+  }
 }
 ?>
 <!doctype html>
@@ -48,6 +54,9 @@ try {
       <?php if ($errorText): ?>
         <h2>Database not ready</h2>
         <p class="meta"><?php echo htmlspecialchars($errorText, ENT_QUOTES, 'UTF-8'); ?></p>
+        <?php if ($errorHint): ?>
+          <pre><?php echo htmlspecialchars($errorHint, ENT_QUOTES, 'UTF-8'); ?></pre>
+        <?php endif; ?>
         <p>Run MySQL init from README, then refresh this page.</p>
       <?php elseif (count($posts) === 0): ?>
         <h2>No posts</h2>

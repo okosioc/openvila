@@ -1,6 +1,7 @@
 CREATE DATABASE IF NOT EXISTS wordpress_demo CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-CREATE USER IF NOT EXISTS 'wordpress_user'@'%' IDENTIFIED BY 'wordpress_pass';
+CREATE USER IF NOT EXISTS 'wordpress_user'@'%' IDENTIFIED WITH mysql_native_password BY 'wordpress_pass';
+ALTER USER 'wordpress_user'@'%' IDENTIFIED WITH mysql_native_password BY 'wordpress_pass';
 GRANT ALL PRIVILEGES ON wordpress_demo.* TO 'wordpress_user'@'%';
 FLUSH PRIVILEGES;
 

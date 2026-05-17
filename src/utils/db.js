@@ -161,12 +161,12 @@ function buildNetworkTargetFromUrl(engine, connectionUrl) {
 
 function buildNetworkTargetFromFields(engine, raw) {
   const defaultPort = engine === "mysql" ? 3306 : engine === "postgresql" ? 5432 : engine === "mongodb" ? 27017 : 0;
-  const split = splitHostPort(raw?.host || raw?.hostname, defaultPort);
+  const split = splitHostPort(raw?.host, defaultPort);
   const host = split.host || "127.0.0.1";
   const port = toPositiveInt(raw?.port, split.port || defaultPort);
-  const user = String(raw?.user || raw?.username || "").trim();
-  const password = String(raw?.password || raw?.pass || "");
-  const database = String(raw?.database || raw?.database_name || raw?.db_name || raw?.schema || "").trim();
+  const user = String(raw?.user || "").trim();
+  const password = String(raw?.password || "");
+  const database = String(raw?.database || "").trim();
 
   if (!database) {
     return null;
@@ -187,31 +187,14 @@ function buildNetworkTargetFromFields(engine, raw) {
   };
 }
 
-export function resolveSqlitePath(cwd, sqlitePath) {
-  if (path.isAbsolute(sqlitePath)) {
-    return sqlitePath;
-  }
-  return path.join(cwd, sqlitePath);
-}
-
 export function resolveDatabaseTarget(cwd, rawTarget) {
   if (!rawTarget || typeof rawTarget !== "object") {
     return null;
   }
 
-  const explicitEngine = normalizeDatabaseEngine(rawTarget.engine || rawTarget.type || rawTarget.kind || "");
+  const explicitEngine = normalizeDatabaseEngine(rawTarget.engine || "");
 
-  const connectionUrl = cleanToken(
-    rawTarget.connection_url ||
-      rawTarget.connectionUrl ||
-      rawTarget.connection ||
-      rawTarget.uri ||
-      rawTarget.url ||
-      rawTarget.dsn ||
-      rawTarget.database_url ||
-      rawTarget.databaseUrl ||
-      "",
-  );
+  const connectionUrl = cleanToken(rawTarget.connection_url || "");
 
   if (connectionUrl) {
     const parsedEngine = engineFromConnectionUrl(connectionUrl);
@@ -227,35 +210,18 @@ export function resolveDatabaseTarget(cwd, rawTarget) {
     }
   }
 
-  const sqlitePath = cleanToken(
-    rawTarget.sqlite_path || rawTarget.sqlitePath || rawTarget.path || rawTarget.file || rawTarget.db_file || "",
-  );
+  const sqlitePath = cleanToken(rawTarget.sqlite_path || "");
   if (sqlitePath && (explicitEngine === "sqlite" || !explicitEngine || isLikelySqlitePath(sqlitePath))) {
     return buildSqliteTarget(cwd, sqlitePath);
   }
 
-  const databaseField = cleanToken(rawTarget.database || rawTarget.db || rawTarget.database_name || rawTarget.db_name || "");
+  const databaseField = cleanToken(rawTarget.database || "");
   if (databaseField && !explicitEngine && isLikelySqlitePath(databaseField)) {
     return buildSqliteTarget(cwd, databaseField);
   }
 
-  if (explicitEngine === "mysql" || explicitEngine === "postgresql") {
+  if (explicitEngine === "mysql" || explicitEngine === "postgresql" || explicitEngine === "mongodb") {
     return buildNetworkTargetFromFields(explicitEngine, rawTarget);
-  }
-
-  if (explicitEngine === "mongodb") {
-    return buildNetworkTargetFromFields(explicitEngine, rawTarget);
-  }
-
-  if ((rawTarget.host || rawTarget.hostname) && databaseField) {
-    const fallbackEngine = normalizeDatabaseEngine(rawTarget.driver || rawTarget.client || "");
-    if (!fallbackEngine) {
-      return null;
-    }
-    return buildNetworkTargetFromFields(fallbackEngine, {
-      ...rawTarget,
-      database: databaseField,
-    });
   }
 
   return null;

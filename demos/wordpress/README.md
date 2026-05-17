@@ -25,6 +25,14 @@ mysql -uroot -p < demos/wordpress/sql/init.sql
 
 If your local MySQL is not `127.0.0.1:3306` or credentials differ, update `demos/wordpress/wp-config.php`.
 
+If `posts.php` shows `SQLSTATE[HY000] [2054] The server requested authentication method unknown to the client`,
+run:
+
+```sql
+ALTER USER 'wordpress_user'@'%' IDENTIFIED WITH mysql_native_password BY 'wordpress_pass';
+FLUSH PRIVILEGES;
+```
+
 ## Start Demo Website
 
 ```bash

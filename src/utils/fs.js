@@ -101,3 +101,37 @@ export function cleanTextForPrompt(text, maxLen = 12000) {
 export function toPosixPath(p) {
   return p.split(path.sep).join("/");
 }
+
+export function sanitizeDocNamePart(value, fallback = "part", maxLen = 48) {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, maxLen);
+  return normalized || fallback;
+}
+
+export function docBaseNameNoHash(source) {
+  const normalizedSource = toPosixPath(String(source || "").trim()).toLowerCase();
+  return (
+    normalizedSource
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 170) || "source"
+  );
+}
+
+export function normalizeStoredPath(value, prefix) {
+  const normalized = toPosixPath(String(value || "").trim()).replace(/^\/+/, "");
+  if (!normalized) {
+    return "";
+  }
+  if (normalized.startsWith(`${prefix}/`)) {
+    return normalized;
+  }
+  return `${prefix}/${normalized}`;
+}
+
+export function storedPathToAbsolute(baseDir, storedPath) {
+  return path.join(baseDir, storedPath);
+}

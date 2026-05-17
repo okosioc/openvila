@@ -348,30 +348,28 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
     h(
       Box,
       {
-        borderStyle: "round",
-        borderColor: "cyan",
         paddingX: 1,
         flexDirection: "column",
       },
-      ...headerLines.map((line, idx) => h(Text, { key: `logo-${idx}`, color: "cyan" }, line)),
-      h(Text, { color: "yellow" }, `OpenVila Manager ${version}`),
-      h(Text, { dimColor: true }, `cwd: ${ctx.cwd}`),
-      h(Text, { dimColor: true }, `runtime: ${statusText(ctx.locale, runtimeReady)}`),
-      h(Text, { dimColor: true }, pick(ctx.locale, "type /help, /exit", "type /help, /exit")),
+      ...headerLines.map((line, idx) => h(Text, { key: `logo-${idx}` }, line)),
+      h(Text, null, `OpenVila Manager ${version}`),
+      h(Text, null, `cwd: ${ctx.cwd}`),
+      h(Text, null, `runtime: ${statusText(ctx.locale, runtimeReady)}`),
+      h(Text, null, pick(ctx.locale, "type /help, /exit", "type /help, /exit")),
     ),
     h(
       Box,
       {
         marginTop: 1,
         borderStyle: "single",
-        borderColor: "green",
+        borderColor: "yellow",
         paddingX: 1,
         flexDirection: "column",
         flexGrow: 1,
       },
       ...(logs.length > 0
-        ? logs.map((line, idx) => h(Text, { key: `log-${idx}` }, line))
-        : [h(Text, { key: "log-empty", dimColor: true }, pick(ctx.locale, "no logs", "no logs"))]),
+        ? logs.map((line, idx) => h(Text, { key: `log-${idx}`, color: "yellow" }, line))
+        : [h(Text, { key: "log-empty", color: "yellow" }, pick(ctx.locale, "no logs", "no logs"))]),
     ),
     suggestions.length > 0
       ? h(
@@ -379,11 +377,10 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
           {
             marginTop: 1,
             borderStyle: "single",
-            borderColor: "blue",
             paddingX: 1,
             flexDirection: "column",
           },
-          h(Text, { color: "blue" }, pick(ctx.locale, "可选命令", "available commands")),
+          h(Text, null, pick(ctx.locale, "可选命令", "available commands")),
           ...suggestions.map((item) =>
             h(Text, { key: item.cmd }, `${item.cmd.padEnd(22)}  ${item.desc}`),
           ),
@@ -394,17 +391,16 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
       {
         marginTop: 1,
         borderStyle: "single",
-        borderColor: "yellow",
         paddingX: 1,
         flexDirection: "column",
       },
-      pendingQuestion ? h(Text, { color: "yellow" }, pendingQuestion) : null,
+      pendingQuestion ? h(Text, null, pendingQuestion) : null,
       h(
         Box,
         null,
-        h(Text, { color: "yellow" }, `${prompt} `),
+        h(Text, null, `${prompt} `),
         h(Text, null, inputValue),
-        h(Text, { color: "yellow" }, cursor),
+        h(Text, null, cursor),
       ),
     ),
   );

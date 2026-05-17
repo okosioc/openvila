@@ -10,7 +10,18 @@ import {
   stringifyDbRow,
   quoteDatabaseIdentifier,
 } from "../utils/db.js";
-import { cleanTextForPrompt, listFilesRecursive, readTextSafe, toPosixPath, writeText } from "../utils/fs.js";
+import {
+  cleanTextForPrompt,
+  docBaseNameNoHash,
+  listFilesRecursive,
+  normalizeStoredPath,
+  readTextSafe,
+  sanitizeDocNamePart,
+  storedPathToAbsolute,
+  toPosixPath,
+  writeText,
+} from "../utils/fs.js";
+import { fetchText, parseSitemapLocs, stripHtml } from "../utils/net.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
 import { ensureRuntime, loadConfig, resolveLlmSettings, runtimePaths } from "./runtime.js";
 
@@ -36,6 +47,7 @@ const KNOWLEDGE_EXTENSIONS = [
   ".j2",
   ".php",
   ".xml",
+  ".astro",
 ];
 
 function zhLocale(locale) {
@@ -73,10 +85,6 @@ function parseBooleanLike(value) {
   return ["true", "1", "yes", "y", "是", "高频", "常见"].includes(normalized);
 }
 
-function limitText(value, maxLen) {
-  return cleanTextForPrompt(String(value || ""), maxLen);
-}
-
 function normalizeOrigin(origin, source = "") {
   const normalized = String(origin || "").trim().toLowerCase();
   if (normalized === "database" || String(source).startsWith("db:")) {
@@ -93,29 +101,40 @@ function docPrefixByOrigin(origin) {
     return "db";
   }
   if (origin === "remote") {
-    return "url";
+    return "remote";
   }
   return "fs";
 }
 
-function docBaseNameNoHash(source) {
-  const normalizedSource = toPosixPath(String(source || "").trim()).toLowerCase();
-  return (
-    normalizedSource
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 170) || "source"
-  );
+function parseDbSourceParts(source) {
+  const matched = /^db:([^:]+):([^:]+):(.+)$/.exec(String(source || "").trim());
+  if (!matched) {
+    return null;
+  }
+  return {
+    engine: matched[1],
+    table: matched[2],
+    id: matched[3],
+  };
 }
 
 function docStoredPathForDoc(doc) {
   const source = String(doc?.source || doc?.id || "doc").trim();
   const origin = normalizeOrigin(doc?.origin, source);
+  if (origin === "database") {
+    const dbParts = parseDbSourceParts(source);
+    if (dbParts) {
+      const engine = sanitizeDocNamePart(dbParts.engine, "db", 20);
+      const table = sanitizeDocNamePart(dbParts.table, "table", 56);
+      const id = sanitizeDocNamePart(dbParts.id, "id", 56);
+      return `docs/db_${engine}_${table}_${id}.md`;
+    }
+    const fallbackId = sanitizeDocNamePart(source.replace(/^db:/i, ""), "id", 72);
+    return `docs/db_unknown_table_${fallbackId}.md`;
+  }
   const prefix = docPrefixByOrigin(origin);
   let sourceForName = source;
-  if (origin === "database") {
-    sourceForName = sourceForName.replace(/^db:/i, "");
-  } else if (origin === "remote") {
+  if (origin === "remote") {
     sourceForName = sourceForName.replace(/^https?:\/\//i, "");
   }
   const base = docBaseNameNoHash(sourceForName);
@@ -137,19 +156,6 @@ function ensureLlmReady(config) {
     );
   }
   return llm;
-}
-
-function stripHtml(html) {
-  return String(html || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<template[\s\S]*?<\/template>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function formatTableCandidatesForPrompt(tableCandidates) {
@@ -273,11 +279,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
       }
     }
   }
-  const rawKnowledgeTables = Array.isArray(parsed?.knowledge_tables)
-    ? parsed.knowledge_tables
-    : Array.isArray(parsed?.knowleadge_tables)
-      ? parsed.knowleadge_tables
-      : [];
+  const rawKnowledgeTables = Array.isArray(parsed?.knowledge_tables) ? parsed.knowledge_tables : [];
   const knowledgeTables = unique(
     rawKnowledgeTables
       .map((item) => {
@@ -308,7 +310,7 @@ function normalizeDbQueryConfig(cwd, rawQueries) {
         return null;
       }
       const name = String(item.name || `query_${idx + 1}`).trim();
-      const query = String(item.query || item.sql || "").trim();
+      const query = String(item.query || "").trim();
       const limit = Math.max(1, Math.min(Number(item.limit || 50) || 50, 300));
 
       const target = resolveDatabaseTarget(cwd, item);
@@ -318,7 +320,7 @@ function normalizeDbQueryConfig(cwd, rawQueries) {
 
       let normalizedQuery = query;
       if (!normalizedQuery && target.engine === "mongodb") {
-        const collection = String(item.collection || item.mongo_collection || "").trim();
+        const collection = String(item.collection || "").trim();
         if (!collection) {
           return null;
         }
@@ -335,11 +337,17 @@ function normalizeDbQueryConfig(cwd, rawQueries) {
         return null;
       }
 
+      const tableName = String(item.table_name || (target.engine === "mongodb" ? item.collection : "")).trim();
+
       return {
         name,
         engine: target.engine,
         target,
         target_label: target.label,
+        table_name: tableName || inferDbTableNameForQuery({
+          engine: target.engine,
+          query: normalizedQuery,
+        }),
         query: normalizedQuery,
         limit,
       };
@@ -371,6 +379,88 @@ function sanitizeQueryName(value) {
       .replace(/^_+|_+$/g, "")
       .slice(0, 96) || "auto_query"
   );
+}
+
+function sanitizeNamePart(value, maxLen = 24) {
+  return (
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, maxLen)
+  );
+}
+
+function inferSqlTableName(query) {
+  const text = String(query || "");
+  const matched = /\bfrom\s+([`"'[]?)([a-zA-Z0-9_.-]+)\1/i.exec(text);
+  if (!matched) {
+    return "";
+  }
+  const full = String(matched[2] || "").trim();
+  if (!full) return "";
+  const parts = full.split(".");
+  return parts[parts.length - 1] || "";
+}
+
+function inferMongoCollectionName(query) {
+  try {
+    const parsed = JSON.parse(String(query || ""));
+    return String(parsed?.collection || parsed?.coll || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function inferDbTableNameForQuery(queryItem) {
+  const explicit = String(queryItem?.table_name || queryItem?.collection || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  const engine = String(queryItem?.engine || "").trim().toLowerCase();
+  if (engine === "mongodb") {
+    return inferMongoCollectionName(queryItem?.query);
+  }
+  return inferSqlTableName(queryItem?.query);
+}
+
+function queryTargetBase(target, engine) {
+  if (engine === "sqlite") {
+    const sqlitePath = String(target?.sqlite_path || target?.db_path || "").trim();
+    const base = sqlitePath ? path.basename(sqlitePath).replace(/\.[^.]+$/, "") : "";
+    return sanitizeNamePart(base, 28) || "sqlite";
+  }
+
+  if (engine === "mysql" || engine === "postgresql" || engine === "mongodb") {
+    let host = "";
+    let port = "";
+    let database = "";
+
+    const connectionUrl = String(target?.connection_url || "").trim();
+    if (connectionUrl) {
+      try {
+        const parsed = new URL(connectionUrl);
+        host = parsed.hostname || "";
+        port = parsed.port || "";
+        database = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+      } catch {
+        // fallback to field-based extraction
+      }
+    }
+
+    host = host || String(target?.host || "").trim();
+    port = port || String(target?.port || "").trim();
+    database = database || String(target?.database || "").trim();
+
+    const parts = [
+      sanitizeNamePart(host, 22),
+      port ? sanitizeNamePart(`p${port}`, 10) : "",
+      sanitizeNamePart(database, 22),
+    ].filter(Boolean);
+    return parts.join("_") || engine;
+  }
+
+  return sanitizeNamePart(engine, 20) || "db";
 }
 
 function tableCandidateKey(targetKey, tableName) {
@@ -445,12 +535,7 @@ async function buildAutoDatabasePlan(cwd, config, knowledgeTables = [], autoDbCa
   const queries = selectedTables
     .slice(0, maxTables)
     .map((item) => {
-      const targetBase =
-        String(item.target_key || item.target_label || item.engine || "db")
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "_")
-          .replace(/^_+|_+$/g, "")
-          .slice(0, 40) || "db";
+      const targetBase = queryTargetBase(item.target, item.engine);
       const queryName = sanitizeQueryName(`auto_${item.engine}_${targetBase}_${item.table_name}`);
       const query =
         item.engine === "mongodb"
@@ -466,6 +551,7 @@ async function buildAutoDatabasePlan(cwd, config, knowledgeTables = [], autoDbCa
         engine: item.engine,
         target: item.target,
         target_label: item.target_label,
+        table_name: item.table_name,
         query,
         limit,
       };
@@ -710,7 +796,7 @@ async function collectFilesystemDocs(cwd, matchedPaths) {
       continue;
     }
 
-    const cleaned = limitText(content, 28000);
+    const cleaned = cleanTextForPrompt(String(content || ""), 28000);
     docs.push({
       id: `file:${relative}`,
       source: relative,
@@ -725,7 +811,28 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
   const docs = [];
   const warnings = [];
   const log = typeof options.log === "function" ? options.log : () => undefined;
-  const limiter = typeof options.limitText === "function" ? options.limitText : (value) => String(value ?? "");
+  const limiter =
+    typeof options.limitText === "function"
+      ? options.limitText
+      : (value, maxLen) => cleanTextForPrompt(String(value ?? ""), maxLen);
+  const usedSources = new Set();
+
+  function pickRowId(row, index) {
+    if (row && typeof row === "object") {
+      const direct = row.id ?? row._id ?? row.post_id ?? row.uid;
+      if (direct !== undefined && direct !== null && String(direct).trim()) {
+        return String(direct);
+      }
+
+      for (const [key, value] of Object.entries(row)) {
+        if (!/_id$/i.test(String(key))) continue;
+        if (value === undefined || value === null) continue;
+        if (!String(value).trim()) continue;
+        return String(value);
+      }
+    }
+    return String(index);
+  }
 
   for (const queryItem of databasePlan.queries) {
     try {
@@ -740,9 +847,19 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
         serverSelectionTimeoutMs: 12000,
         limit: queryItem.limit,
       });
+      const engineToken = sanitizeDocNamePart(queryItem.engine || target.engine || "db", "db", 20);
+      const tableName = inferDbTableNameForQuery(queryItem) || queryItem.name || "table";
+      const tableToken = sanitizeDocNamePart(tableName, "table", 56);
       for (let i = 0; i < rows.length && i < queryItem.limit; i += 1) {
         const row = rows[i];
-        const source = `db:${queryItem.name}#${i + 1}`;
+        const rowIdRaw = pickRowId(row, i + 1);
+        let rowIdToken = sanitizeDocNamePart(rowIdRaw, String(i + 1), 56);
+        let source = `db:${engineToken}:${tableToken}:${rowIdToken}`;
+        if (usedSources.has(source)) {
+          rowIdToken = sanitizeDocNamePart(`${rowIdToken}_${i + 1}`, String(i + 1), 56);
+          source = `db:${engineToken}:${tableToken}:${rowIdToken}`;
+        }
+        usedSources.add(source);
         const text = limiter(stringifyDbRow(row), 16000);
         docs.push({
           id: source,
@@ -759,34 +876,6 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
   }
 
   return { docs, warnings };
-}
-
-async function fetchText(url, timeoutMs = 12000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return await response.text();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function parseSitemapLocs(xmlText) {
-  const urls = [];
-  const re = /<loc>([^<]+)<\/loc>/gi;
-  let match = re.exec(xmlText);
-  while (match) {
-    const value = String(match[1] || "").trim();
-    if (value) {
-      urls.push(value);
-    }
-    match = re.exec(xmlText);
-  }
-  return unique(urls);
 }
 
 async function collectRemoteDocs(remotePlan, log) {
@@ -812,7 +901,7 @@ async function collectRemoteDocs(remotePlan, log) {
   for (const url of urls) {
     try {
       const html = await fetchText(url, 15000);
-      const text = limitText(stripHtml(html), 16000);
+      const text = cleanTextForPrompt(stripHtml(html), 16000);
       if (!text) continue;
 
       docs.push({
@@ -862,7 +951,7 @@ function buildDocCompileBatchItems(changeDocs, compileDocsMap, config) {
       `Old Doc Path: ${item.old_doc_path || ""}`,
       "",
       "Content:",
-      limitText(doc.content, settings.docContentChars),
+      cleanTextForPrompt(String(doc.content || ""), settings.docContentChars),
     ].join("\n");
 
     return {
@@ -1071,21 +1160,6 @@ function renderIndexMarkdown({ locale, generatedAt, scanMode, indexMap }) {
   return lines.join("\n");
 }
 
-function normalizeStoredPath(value, prefix) {
-  const normalized = toPosixPath(String(value || "").trim()).replace(/^\/+/, "");
-  if (!normalized) {
-    return "";
-  }
-  if (normalized.startsWith(`${prefix}/`)) {
-    return normalized;
-  }
-  return `${prefix}/${normalized}`;
-}
-
-function storedPathToAbsolute(paths, storedPath) {
-  return path.join(paths.knowledges, storedPath);
-}
-
 async function writeCompiledDocs(paths, compiledBySource, options = {}) {
   const reset = Boolean(options.reset);
   const previousDocMap = options.previousDocMap || {};
@@ -1096,13 +1170,13 @@ async function writeCompiledDocs(paths, compiledBySource, options = {}) {
     if (!docPath) {
       continue;
     }
-    const fullPath = storedPathToAbsolute(paths, docPath);
+    const fullPath = storedPathToAbsolute(paths.knowledges, docPath);
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
     await writeText(fullPath, item.markdown || "");
 
     const previousDocPath = normalizeStoredPath(previousDocMap[source], "docs");
     if (!reset && previousDocPath && previousDocPath !== docPath) {
-      await fs.rm(storedPathToAbsolute(paths, previousDocPath), { force: true });
+      await fs.rm(storedPathToAbsolute(paths.knowledges, previousDocPath), { force: true });
     }
   }
 
@@ -1110,7 +1184,7 @@ async function writeCompiledDocs(paths, compiledBySource, options = {}) {
     for (const source of deletedSources) {
       const previousDocPath = normalizeStoredPath(previousDocMap[source], "docs");
       if (!previousDocPath) continue;
-      await fs.rm(storedPathToAbsolute(paths, previousDocPath), { force: true });
+      await fs.rm(storedPathToAbsolute(paths.knowledges, previousDocPath), { force: true });
     }
   }
 }
@@ -1166,7 +1240,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   if (selections.database) {
     log(t(locale, "执行数据库查询中...", "Running database queries..."));
-    const dbResult = await collectDatabaseDocs(cwd, plan.database, { log, limitText });
+    const dbResult = await collectDatabaseDocs(cwd, plan.database, { log, limitText: cleanTextForPrompt });
     docs.push(...dbResult.docs);
     warnings.push(...dbResult.warnings);
     scannedDbRows = dbResult.docs.length;
@@ -1444,7 +1518,7 @@ export async function loadDocContents(cwd, docPaths) {
     if (!docPath) {
       continue;
     }
-    const content = await readTextSafe(storedPathToAbsolute(paths, docPath));
+    const content = await readTextSafe(storedPathToAbsolute(paths.knowledges, docPath));
     if (content) {
       output.push({
         doc_path: docPath,
