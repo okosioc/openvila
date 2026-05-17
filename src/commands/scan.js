@@ -21,7 +21,9 @@ function isYes(answer, defaultYes = true) {
 function renderScanPlan(ctx, plan) {
   const llmAssist = plan.filesystem.llm_assist;
   const llmSelectedTables = (plan.filesystem.knowledge_tables || []).length;
-  const dbQueries = plan.database.queries.map((item) => `${item.name} (${item.sqlite_path})`).slice(0, 6);
+  const dbQueries = plan.database.queries
+    .map((item) => `${item.name} (${item.target_label || item.target?.label || item.engine || "db"})`)
+    .slice(0, 6);
   const dbSource = String(plan.database.source || "none");
   const dbAuto = plan.database.auto_discovery || {};
 
@@ -40,6 +42,7 @@ function renderScanPlan(ctx, plan) {
       `- 数据库来源: ${dbSource}`,
       `- 数据库 queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
       `- 数据库发现: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
+      `- 数据库引擎: sqlite=${dbAuto.by_engine?.sqlite ?? 0}, mysql=${dbAuto.by_engine?.mysql ?? 0}, postgresql=${dbAuto.by_engine?.postgresql ?? 0}, mongodb=${dbAuto.by_engine?.mongodb ?? 0}`,
       `- 远程 sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
     [
@@ -55,6 +58,7 @@ function renderScanPlan(ctx, plan) {
       `- database source: ${dbSource}`,
       `- database queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
       `- database discovery: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
+      `- database engines: sqlite=${dbAuto.by_engine?.sqlite ?? 0}, mysql=${dbAuto.by_engine?.mysql ?? 0}, postgresql=${dbAuto.by_engine?.postgresql ?? 0}, mongodb=${dbAuto.by_engine?.mongodb ?? 0}`,
       `- remote sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
   );

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ .Title }} | OpenVila Hugo Demo</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <main class="site">
+      <header>
+        <h1>OpenVila Hugo Demo</h1>
+        <p class="tagline">Hugo pages for /scan and knowledge index tests.</p>
+        <nav>
+          <a href="/">Home</a>
+          <a href="/pricing/">Pricing</a>
+          <a href="/faq/">FAQ</a>
+          <a href="/user-agreement/">User Agreement</a>
+          <a href="/privacy-policy/">Privacy Policy</a>
+          <a href="/posts/">Posts</a>
+        </nav>
+      </header>
+      <section>
+        {{ block "main" . }}{{ end }}
+      </section>
+    </main>
+  </body>
+</html>

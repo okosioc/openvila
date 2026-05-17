@@ -1,0 +1,9 @@
+baseURL = "http://localhost:1314/"
+languageCode = "en-us"
+title = "OpenVila Hugo Demo"
+defaultContentLanguage = "en"
+
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true

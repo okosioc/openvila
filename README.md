@@ -109,9 +109,15 @@ openvila run
 
 Database scan behavior:
 - if `scan.database_queries` is configured, `/scan` uses configured queries
-- if not configured and `scan.db_auto` is true (default), `/scan` auto-discovers SQLite DB files/tables, asks LLM to return `knowledge_tables`, then queries only those tables with `SELECT * ... LIMIT`
+- if not configured and `scan.db_auto` is true (default), `/scan` auto-discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then queries only those selected items
 - optional auto knobs: `scan.db_auto_max_tables` (default `6`), `scan.db_auto_query_limit` (default `80`), `scan.db_auto_max_candidate_tables` (default `360`)
-- SQLite access uses Node `sqlite3` dependency (no external `sqlite3` CLI requirement)
+- database access uses Node drivers (`sqlite3` / `mysql2` / `pg` / `mongodb`), no external DB CLI requirement
+
+Configured query fields (per item in `scan.database_queries`):
+- SQLite: `sqlite_path` + `query`
+- MySQL/PostgreSQL: `engine` (`mysql` / `postgresql`) + `connection_url` + `query`
+- MongoDB: `engine: mongodb` + `connection_url` + (`query` as JSON string, or `collection` with optional `filter`/`sort`/`projection`)
+- Unsupported database engines are skipped; failed queries are logged and scan continues with remaining sources.
 
 Output semantics:
 - `knowledges/docs/*.md`: one compiled markdown doc per source file/row/page

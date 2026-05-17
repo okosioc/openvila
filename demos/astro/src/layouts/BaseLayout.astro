@@ -1,0 +1,74 @@
+---
+const { title = "OpenVila Astro Demo" } = Astro.props;
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <style>
+      :root {
+        --bg: #f4efe7;
+        --panel: #fffdf8;
+        --text: #1f1a14;
+        --muted: #6f665d;
+        --line: #d9cdbc;
+        --accent: #9b6128;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--text);
+        background: radial-gradient(circle at top left, #fff8ec 0%, var(--bg) 55%, #ecdfcc 100%);
+      }
+      .site {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 22px 16px 64px;
+      }
+      header {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        padding: 20px;
+      }
+      nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      nav a {
+        color: var(--accent);
+        text-decoration: none;
+        border-bottom: 1px dotted var(--accent);
+      }
+      section {
+        margin-top: 16px;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        padding: 18px;
+      }
+      h1, h2 { line-height: 1.25; margin: 0 0 10px; }
+      p, li { line-height: 1.7; }
+      .muted { color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main class="site">
+      <header>
+        <h1>OpenVila Astro Demo</h1>
+        <p class="muted">Astro pages for testing /scan and policy retrieval.</p>
+        <nav>
+          <a href="/">Home</a>
+          <a href="/pricing">Pricing</a>
+          <a href="/faq">FAQ</a>
+          <a href="/user-agreement">User Agreement</a>
+          <a href="/privacy-policy">Privacy Policy</a>
+        </nav>
+      </header>
+      <slot />
+    </main>
+  </body>
+</html>

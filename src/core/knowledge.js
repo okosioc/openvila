@@ -2,13 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
-  discoverSqliteDatabasePaths,
-  listSqliteTableColumns,
-  listSqliteTables,
-  resolveSqlitePath,
-  runSqliteJsonQuery,
+  discoverDatabaseTargets,
+  listDatabaseTableColumns,
+  listDatabaseTables,
+  resolveDatabaseTarget,
+  runDatabaseJsonQuery,
   stringifyDbRow,
-  quoteSqliteIdentifier,
+  quoteDatabaseIdentifier,
 } from "../utils/db.js";
 import { cleanTextForPrompt, listFilesRecursive, readTextSafe, toPosixPath, writeText } from "../utils/fs.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
@@ -169,7 +169,8 @@ function formatTableCandidatesForPrompt(tableCandidates) {
         .join(", ");
       return [
         `- key: ${item.key}`,
-        `  sqlite_path: ${item.sqlite_path}`,
+        `  engine: ${item.engine}`,
+        `  target: ${item.target_label}`,
         `  table: ${item.table_name}`,
         `  columns: ${columns || "(none)"}`,
       ].join("\n");
@@ -300,35 +301,58 @@ async function pickKnowledgesByLlm(config, options = {}) {
   };
 }
 
-function normalizeDbQueryConfig(rawQueries) {
+function normalizeDbQueryConfig(cwd, rawQueries) {
   return rawQueries
     .map((item, idx) => {
       if (!item || typeof item !== "object") {
         return null;
       }
       const name = String(item.name || `query_${idx + 1}`).trim();
-      const sqlitePath = String(item.sqlite_path || item.sqlitePath || item.database || item.db || "").trim();
       const query = String(item.query || item.sql || "").trim();
       const limit = Math.max(1, Math.min(Number(item.limit || 50) || 50, 300));
-      if (!sqlitePath || !query) {
+
+      const target = resolveDatabaseTarget(cwd, item);
+      if (!target) {
         return null;
       }
+
+      let normalizedQuery = query;
+      if (!normalizedQuery && target.engine === "mongodb") {
+        const collection = String(item.collection || item.mongo_collection || "").trim();
+        if (!collection) {
+          return null;
+        }
+        const spec = {
+          collection,
+          filter: item.filter && typeof item.filter === "object" ? item.filter : {},
+          sort: item.sort && typeof item.sort === "object" ? item.sort : undefined,
+          projection: item.projection && typeof item.projection === "object" ? item.projection : undefined,
+          limit,
+        };
+        normalizedQuery = JSON.stringify(spec);
+      }
+      if (!normalizedQuery) {
+        return null;
+      }
+
       return {
         name,
-        sqlite_path: sqlitePath,
-        query,
+        engine: target.engine,
+        target,
+        target_label: target.label,
+        query: normalizedQuery,
         limit,
       };
     })
     .filter(Boolean);
 }
 
-function configuredDatabaseQueries(config) {
+function configuredDatabaseQueries(cwd, config) {
   const rawQueries = [
     ...toArray(config?.scan?.database_queries),
     ...toArray(config?.scan?.database?.queries),
   ];
-  return normalizeDbQueryConfig(rawQueries);
+  return normalizeDbQueryConfig(cwd, rawQueries);
 }
 
 function clampInt(value, min, max, fallback) {
@@ -349,16 +373,8 @@ function sanitizeQueryName(value) {
   );
 }
 
-function sqlitePathForPlan(cwd, absolutePath) {
-  const relative = toPosixPath(path.relative(cwd, absolutePath));
-  if (relative && !relative.startsWith("../") && relative !== "..") {
-    return relative;
-  }
-  return absolutePath;
-}
-
-function tableCandidateKey(sqlitePath, tableName) {
-  return `${sqlitePath}::${tableName}`;
+function tableCandidateKey(targetKey, tableName) {
+  return `${targetKey}::${tableName}`;
 }
 
 function normalizeSelectedKnowledgeTables(values) {
@@ -366,25 +382,27 @@ function normalizeSelectedKnowledgeTables(values) {
 }
 
 async function collectAutoDatabaseCandidates(cwd, config) {
-  const discovered = await discoverSqliteDatabasePaths(cwd, {
+  const discovered = await discoverDatabaseTargets(cwd, {
     maxFiles: clampInt(config?.scan?.db_auto_max_files, 20, 500, 220),
     maxSourceFiles: clampInt(config?.scan?.db_auto_max_source_files, 300, 3000, 1600),
     maxSourceFileSize: clampInt(config?.scan?.db_auto_max_source_file_size, 16 * 1024, 256 * 1024, 96 * 1024),
   });
-  const dbPaths = (discovered.paths || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+  const targets = (discovered.targets || []).slice().sort((a, b) => String(a?.key || "").localeCompare(String(b?.key || "")));
   const maxCandidates = clampInt(config?.scan?.db_auto_max_candidate_tables, 20, 1200, 360);
   const tableCandidates = [];
   let totalTables = 0;
 
-  for (const dbPath of dbPaths) {
-    const tables = await listSqliteTables(dbPath).catch(() => []);
+  for (const target of targets) {
+    const tables = await listDatabaseTables(target).catch(() => []);
     totalTables += tables.length;
     for (const tableName of tables) {
-      const columns = await listSqliteTableColumns(dbPath, tableName).catch(() => []);
-      const sqlitePath = sqlitePathForPlan(cwd, dbPath);
+      const columns = await listDatabaseTableColumns(target, tableName).catch(() => []);
       tableCandidates.push({
-        key: tableCandidateKey(sqlitePath, tableName),
-        sqlite_path: sqlitePath,
+        key: tableCandidateKey(target.key, tableName),
+        engine: target.engine,
+        target_key: target.key,
+        target_label: target.label,
+        target,
         table_name: tableName,
         columns,
       });
@@ -400,12 +418,18 @@ async function collectAutoDatabaseCandidates(cwd, config) {
   return {
     table_candidates: tableCandidates,
     auto_discovery: {
-      database_count: dbPaths.length,
+      database_count: targets.length,
       table_count: totalTables,
       candidate_tables: tableCandidates.length,
       discovered_files: discovered.discovered_files || [],
       mentioned_tokens: discovered.mentioned_tokens || [],
       unresolved_tokens: discovered.unresolved_tokens || [],
+      by_engine: discovered.by_engine || {
+        sqlite: 0,
+        mysql: 0,
+        postgresql: 0,
+        mongodb: 0,
+      },
     },
   };
 }
@@ -421,12 +445,28 @@ async function buildAutoDatabasePlan(cwd, config, knowledgeTables = [], autoDbCa
   const queries = selectedTables
     .slice(0, maxTables)
     .map((item) => {
-      const dbBase = path.basename(item.sqlite_path).replace(/\.[^.]+$/, "") || "db";
-      const queryName = sanitizeQueryName(`auto_${dbBase}_${item.table_name}`);
+      const targetBase =
+        String(item.target_key || item.target_label || item.engine || "db")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 40) || "db";
+      const queryName = sanitizeQueryName(`auto_${item.engine}_${targetBase}_${item.table_name}`);
+      const query =
+        item.engine === "mongodb"
+          ? JSON.stringify({
+              collection: item.table_name,
+              filter: {},
+              sort: { _id: -1 },
+              limit,
+            })
+          : `SELECT * FROM ${quoteDatabaseIdentifier(item.engine, item.table_name)} LIMIT ${limit}`;
       return {
         name: queryName,
-        sqlite_path: item.sqlite_path,
-        query: `SELECT * FROM ${quoteSqliteIdentifier(item.table_name)} LIMIT ${limit}`,
+        engine: item.engine,
+        target: item.target,
+        target_label: item.target_label,
+        query,
         limit,
       };
     })
@@ -443,6 +483,12 @@ async function buildAutoDatabasePlan(cwd, config, knowledgeTables = [], autoDbCa
         discovered_files: [],
         mentioned_tokens: [],
         unresolved_tokens: [],
+        by_engine: {
+          sqlite: 0,
+          mysql: 0,
+          postgresql: 0,
+          mongodb: 0,
+        },
       }),
       selected_tables: queries.length,
     },
@@ -460,7 +506,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
       createIfMissing: false,
     }).catch(() => ({})));
 
-  const configuredQueries = configuredDatabaseQueries(config);
+  const configuredQueries = configuredDatabaseQueries(cwd, config);
   const autoDbEnabled = config?.scan?.db_auto !== false;
   const autoDbCandidates =
     autoDbEnabled && configuredQueries.length === 0
@@ -474,6 +520,12 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
             discovered_files: [],
             mentioned_tokens: [],
             unresolved_tokens: [],
+            by_engine: {
+              sqlite: 0,
+              mysql: 0,
+              postgresql: 0,
+              mongodb: 0,
+            },
           },
         };
 
@@ -516,6 +568,12 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
         discovered_files: [],
         mentioned_tokens: [],
         unresolved_tokens: [],
+        by_engine: {
+          sqlite: 0,
+          mysql: 0,
+          postgresql: 0,
+          mongodb: 0,
+        },
       },
     };
   } else if (!autoDbEnabled) {
@@ -530,6 +588,12 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
         discovered_files: [],
         mentioned_tokens: [],
         unresolved_tokens: [],
+        by_engine: {
+          sqlite: 0,
+          mysql: 0,
+          postgresql: 0,
+          mongodb: 0,
+        },
       },
     };
   } else {
@@ -664,10 +728,17 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
   const limiter = typeof options.limitText === "function" ? options.limitText : (value) => String(value ?? "");
 
   for (const queryItem of databasePlan.queries) {
-    const dbPath = resolveSqlitePath(cwd, queryItem.sqlite_path);
     try {
-      const rows = await runSqliteJsonQuery(dbPath, queryItem.query, {
-        maxBuffer: 8 * 1024 * 1024,
+      const target = queryItem.target || resolveDatabaseTarget(cwd, queryItem);
+      if (!target) {
+        throw new Error("database target is missing");
+      }
+
+      const rows = await runDatabaseJsonQuery(target, queryItem.query, {
+        busyTimeoutMs: 6000,
+        statementTimeoutMs: 15000,
+        serverSelectionTimeoutMs: 12000,
+        limit: queryItem.limit,
       });
       for (let i = 0; i < rows.length && i < queryItem.limit; i += 1) {
         const row = rows[i];

@@ -1,0 +1,94 @@
+:root {
+  --bg: #f5f1e8;
+  --panel: #fffdf8;
+  --text: #1d1a16;
+  --muted: #6a5f51;
+  --line: #d8cbb6;
+  --accent: #8a5a2b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  background: radial-gradient(circle at top left, #fff8ec 0%, var(--bg) 56%, #efe4d2 100%);
+  color: var(--text);
+}
+
+.site {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+}
+
+header {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 20px;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 10px;
+  line-height: 1.2;
+}
+
+h1 {
+  font-size: 34px;
+}
+
+.tagline {
+  color: var(--muted);
+  margin: 0;
+}
+
+nav {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+nav a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+
+section {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 18px;
+}
+
+p,
+li {
+  line-height: 1.7;
+}
+
+code {
+  background: #f0e8db;
+  padding: 2px 6px;
+}
+
+article {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+article:first-of-type {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 14px;
+}
