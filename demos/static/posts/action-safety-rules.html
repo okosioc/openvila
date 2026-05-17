@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Action Safety Rules - Static Demo</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header>
+    <div class="nav-wrap">
+      <a class="brand" href="../index.html">Static Demo</a>
+      <nav>
+        <a href="../index.html">Home</a>
+        <a href="../pricing.html">Pricing</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="../user-agreement.html">User Agreement</a>
+        <a href="../privacy-policy.html">Privacy</a>
+        <a class="active" href="./index.html">Posts</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="card">
+      <h1>Action Safety Rules for Owner-Approved Automation</h1>
+      <p><strong>Date:</strong> May 14, 2026</p>
+      <p><strong>Tags:</strong> action, security, approval, operations</p>
+
+      <p>
+        OpenVila actions are powerful because they can change website state.
+        The operational model should always keep the owner in the approval loop.
+      </p>
+
+      <h3>Rule 1: actions are owner-created only</h3>
+      <p>
+        Users can request actions but cannot create or modify scripts.
+        This prevents privilege escalation through prompt injection.
+      </p>
+
+      <h3>Rule 2: all risky actions require manual approval</h3>
+      <p>
+        Content blocking, refund execution, and account updates should always go through
+        pending review and explicit owner confirmation.
+      </p>
+
+      <h3>Rule 3: keep an audit trail</h3>
+      <p>
+        Store action requests with timestamps, request payload, and final decision.
+        This is useful for both debugging and compliance checks.
+      </p>
+
+      <h3>Rule 4: validate input in script layer</h3>
+      <p>
+        Even after approval, scripts should validate domain objects and constraints
+        before writing data or updating content.
+      </p>
+    </article>
+  </main>
+</body>
+</html>

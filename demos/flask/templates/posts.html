@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% set active = 'posts' %}
+{% block title %}Posts - Flask Demo{% endblock %}
+{% block content %}
+<h1>Blog Posts</h1>
+<p>These posts are seeded into SQLite and loaded dynamically.</p>
+
+<div class="grid">
+  {% for post in posts %}
+  <article class="plan">
+    <h3><a href="{{ url_for('post_detail', slug=post['slug']) }}">{{ post['title'] }}</a></h3>
+    <p>{{ post['summary'] }}</p>
+    <p class="meta">Date: {{ post['created_at'] }} | Tags: {{ post['tags'] }}</p>
+  </article>
+  {% endfor %}
+</div>
+{% endblock %}

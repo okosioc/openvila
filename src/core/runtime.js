@@ -68,9 +68,14 @@ export function defaultConfig() {
     },
     scan: {
       llm_candidate_limit: 420,
+      llm_table_candidate_limit: 260,
       llm_compile_batch_chars: 100000,
       llm_compile_doc_chars: 18000,
       llm_compile_max_tokens: 4800,
+      db_auto: true,
+      db_auto_max_tables: 6,
+      db_auto_max_candidate_tables: 360,
+      db_auto_query_limit: 80,
     },
     run: {
       port: 3800,

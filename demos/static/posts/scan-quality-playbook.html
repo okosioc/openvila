@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scan Quality Playbook - Static Demo</title>
+  <link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+  <header>
+    <div class="nav-wrap">
+      <a class="brand" href="../index.html">Static Demo</a>
+      <nav>
+        <a href="../index.html">Home</a>
+        <a href="../pricing.html">Pricing</a>
+        <a href="../faq.html">FAQ</a>
+        <a href="../user-agreement.html">User Agreement</a>
+        <a href="../privacy-policy.html">Privacy</a>
+        <a class="active" href="./index.html">Posts</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article class="card">
+      <h1>Scan Quality Playbook for Static Sites</h1>
+      <p><strong>Date:</strong> May 12, 2026</p>
+      <p><strong>Tags:</strong> scan, index, knowledge, maintenance</p>
+
+      <p>
+        High quality `/scan` output depends more on source consistency than on prompt tweaks.
+        The best result comes from stable naming, explicit headings, and low duplication.
+      </p>
+
+      <h3>Use one source of truth per topic</h3>
+      <p>
+        Keep pricing in one file and avoid multiple near-identical copies.
+        Duplicate pages increase ambiguity during document compilation.
+      </p>
+
+      <h3>Prefer explicit headings</h3>
+      <p>
+        Use direct headings like "Refund Policy", "Support SLA", and "Billing Cycle".
+        These headings are easier for retrieval and improve answer precision.
+      </p>
+
+      <h3>Update by increment, not rewrite</h3>
+      <p>
+        Small, incremental edits let OpenVila compile only changed docs.
+        This keeps scans fast and makes diff review straightforward.
+      </p>
+
+      <h3>Review index after each major edit</h3>
+      <p>
+        After policy or pricing changes, run `/scan` and quickly inspect `knowledges/index.md`
+        to confirm that summaries and frequent concerns remain accurate.
+      </p>
+    </article>
+  </main>
+</body>
+</html>

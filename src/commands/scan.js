@@ -1,7 +1,6 @@
 import process from "node:process";
 import readline from "node:readline";
 import { buildKnowledgeBase, prepareKnowledgeScanPlan } from "../core/knowledge.js";
-import { createRuntimeFileLogger } from "../core/logging.js";
 import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
@@ -21,7 +20,10 @@ function isYes(answer, defaultYes = true) {
 
 function renderScanPlan(ctx, plan) {
   const llmAssist = plan.filesystem.llm_assist;
+  const llmSelectedTables = (plan.filesystem.knowledge_tables || []).length;
   const dbQueries = plan.database.queries.map((item) => `${item.name} (${item.sqlite_path})`).slice(0, 6);
+  const dbSource = String(plan.database.source || "none");
+  const dbAuto = plan.database.auto_discovery || {};
 
   return pick(
     ctx.locale,
@@ -31,10 +33,13 @@ function renderScanPlan(ctx, plan) {
       `- 识别信号: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- LLM模型: ${llmAssist.model || "unknown"}`,
       `- LLM选择知识文件数: ${llmAssist.selected || plan.filesystem.matched_paths.length}`,
+      `- LLM选择知识表数: ${llmSelectedTables}`,
       "",
       "[scan] 3/6 待确认扫描范围",
       `- 文件候选数: ${plan.filesystem.total_candidates}, 命中数: ${plan.filesystem.matched_paths.length}`,
+      `- 数据库来源: ${dbSource}`,
       `- 数据库 queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
+      `- 数据库发现: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- 远程 sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
     [
@@ -43,10 +48,13 @@ function renderScanPlan(ctx, plan) {
       `- signals: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- LLM model: ${llmAssist.model || "unknown"}`,
       `- LLM-selected knowledge files: ${llmAssist.selected || plan.filesystem.matched_paths.length}`,
+      `- LLM-selected knowledge tables: ${llmSelectedTables}`,
       "",
       "[scan] 3/6 Scan Scope To Confirm",
       `- file candidates: ${plan.filesystem.total_candidates}, matched: ${plan.filesystem.matched_paths.length}`,
+      `- database source: ${dbSource}`,
       `- database queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
+      `- database discovery: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- remote sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
   );
@@ -108,18 +116,6 @@ async function confirmSelections(ctx, plan, defaults) {
 }
 
 export async function runScan(ctx, argv) {
-  const previousFileLog = ctx.fileLog;
-  const previousLogFilePath = ctx.logFilePath;
-  let scanFileLogger = null;
-
-  try {
-    scanFileLogger = await createRuntimeFileLogger(ctx.cwd, { prefix: "scan" });
-    ctx.fileLog = (text) => scanFileLogger.append(String(text ?? ""));
-    ctx.logFilePath = scanFileLogger.logFilePath;
-  } catch {
-    // Keep existing runtime logger when scan logger creation fails.
-  }
-
   const log = (line) => ctx.log(String(line ?? ""));
 
   try {
@@ -216,11 +212,5 @@ export async function runScan(ctx, argv) {
   } catch (error) {
     log(pick(ctx.locale, `[scan] 执行失败: ${error.message}`, `[scan] Failed: ${error.message}`));
     throw error;
-  } finally {
-    if (scanFileLogger) {
-      await scanFileLogger.flush().catch(() => undefined);
-    }
-    ctx.fileLog = previousFileLog;
-    ctx.logFilePath = previousLogFilePath;
   }
 }

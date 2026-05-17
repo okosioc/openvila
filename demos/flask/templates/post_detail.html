@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% set active = 'posts' %}
+{% block title %}{{ post['title'] }} - Flask Demo{% endblock %}
+{% block content %}
+<h1>{{ post['title'] }}</h1>
+<p class="meta">Date: {{ post['created_at'] }} | Tags: {{ post['tags'] }}</p>
+<p>{{ post['summary'] }}</p>
+
+<div class="post-body">{{ post['body'] }}</div>
+
+<p><a href="{{ url_for('posts') }}">Back to posts</a></p>
+{% endblock %}

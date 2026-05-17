@@ -1,13 +1,18 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import {
+  discoverSqliteDatabasePaths,
+  listSqliteTableColumns,
+  listSqliteTables,
+  resolveSqlitePath,
+  runSqliteJsonQuery,
+  stringifyDbRow,
+  quoteSqliteIdentifier,
+} from "../utils/db.js";
 import { cleanTextForPrompt, listFilesRecursive, readTextSafe, toPosixPath, writeText } from "../utils/fs.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
 import { ensureRuntime, loadConfig, resolveLlmSettings, runtimePaths } from "./runtime.js";
-
-const execFileAsync = promisify(execFile);
 
 const KNOWLEDGE_EXTENSIONS = [
   ".md",
@@ -68,10 +73,6 @@ function parseBooleanLike(value) {
   return ["true", "1", "yes", "y", "是", "高频", "常见"].includes(normalized);
 }
 
-function normalizeGlob(glob) {
-  return toPosixPath(String(glob || "").trim().replace(/^\.\//, ""));
-}
-
 function limitText(value, maxLen) {
   return cleanTextForPrompt(String(value || ""), maxLen);
 }
@@ -111,7 +112,13 @@ function docStoredPathForDoc(doc) {
   const source = String(doc?.source || doc?.id || "doc").trim();
   const origin = normalizeOrigin(doc?.origin, source);
   const prefix = docPrefixByOrigin(origin);
-  const base = docBaseNameNoHash(source);
+  let sourceForName = source;
+  if (origin === "database") {
+    sourceForName = sourceForName.replace(/^db:/i, "");
+  } else if (origin === "remote") {
+    sourceForName = sourceForName.replace(/^https?:\/\//i, "");
+  }
+  const base = docBaseNameNoHash(sourceForName);
   return `docs/${prefix}-${base}.md`;
 }
 
@@ -145,42 +152,82 @@ function stripHtml(html) {
     .trim();
 }
 
-// 核心逻辑! 根据候选文件路径列表，调用 LLM 进行框架推断和知识文件筛选。
-async function pickKnowledgeFilesByLlm(config, candidatePaths) {
+function formatTableCandidatesForPrompt(tableCandidates) {
+  if (!Array.isArray(tableCandidates) || tableCandidates.length === 0) {
+    return "(none)";
+  }
+  return tableCandidates
+    .map((item) => {
+      const columns = toArray(item.columns)
+        .map((column) => {
+          const name = String(column?.name || "").trim();
+          const type = String(column?.type || "").trim();
+          if (!name) return "";
+          return type ? `${name}(${type})` : name;
+        })
+        .filter(Boolean)
+        .join(", ");
+      return [
+        `- key: ${item.key}`,
+        `  sqlite_path: ${item.sqlite_path}`,
+        `  table: ${item.table_name}`,
+        `  columns: ${columns || "(none)"}`,
+      ].join("\n");
+    })
+    .join("\n");
+}
+
+// 核心逻辑! 根据候选源列表，调用 LLM 进行框架推断和知识源筛选。
+async function pickKnowledgesByLlm(config, options = {}) {
+  const candidatePaths = Array.isArray(options.candidatePaths) ? options.candidatePaths : [];
+  const tableCandidates = Array.isArray(options.tableCandidates) ? options.tableCandidates : [];
   const llm = ensureLlmReady(config);
-  if (candidatePaths.length === 0) {
+  if (candidatePaths.length === 0 && tableCandidates.length === 0) {
     return {
       framework: "unknown",
       framework_signals: [],
       knowledge_files: [],
+      knowledge_tables: [],
       model: llm.model,
     };
   }
 
   const llmCandidateLimit = Math.max(60, Math.min(Number(config?.scan?.llm_candidate_limit || 420) || 420, 900));
-  const sample = candidatePaths.slice(0, llmCandidateLimit);
+  const llmTableCandidateLimit = Math.max(
+    20,
+    Math.min(Number(config?.scan?.llm_table_candidate_limit || 260) || 260, 800),
+  );
+  const fileSample = candidatePaths.slice(0, llmCandidateLimit);
+  const tableSample = tableCandidates.slice(0, llmTableCandidateLimit);
 
   const messages = [
     {
       role: "system",
       content:
-        'You are a knowledge scan planner. Infer framework from file paths and select only user-facing business-knowledge files. Return JSON only: {"framework":"...","framework_signals":["..."],"knowledge_files":["..."]}. framework: project framework (flask/nextjs/wordpress/etc). framework_signals: specific files/dirs proving framework. knowledge_files: files with user-visible factual content.',
+        'You are a knowledge scan planner. Infer framework from candidate file paths and pick knowledge-relevant database tables. Return JSON only: {"framework":"...","framework_signals":["..."],"knowledge_files":["..."],"knowledge_tables":["..."]}. framework: project framework (flask/nextjs/wordpress/etc). framework_signals: specific file/dir signals. knowledge_files: files with user-visible factual content. knowledge_tables: table keys with user-facing factual content.',
     },
     {
       role: "user",
       content: [
-        `Candidate file count: ${sample.length}`,
+        `Candidate file count: ${fileSample.length}`,
         "Candidates:",
-        sample.join("\n"),
+        fileSample.join("\n") || "(none)",
+        "",
+        `Candidate table count: ${tableSample.length}`,
+        "Table candidates:",
+        formatTableCandidatesForPrompt(tableSample),
         "",
         "Constraints:",
         "- Choose knowledge_files from candidates only.",
+        "- Choose knowledge_tables from table candidate keys only.",
         "- Prioritize business text pages: pricing, terms, privacy, refund, faq/help, about/contact, product docs, support, policy pages, blog index/posts.",
+        "- Prioritize tables holding user-visible business knowledge: pages/posts/articles/faq/policies/pricing/help/docs content.",
         "- Exclude static/code-only files: assets/**, static/**, public/**, dist/**, build/**, vendor/**, node_modules/**.",
         "- Exclude style/script/media files: *.css, *.scss, *.sass, *.less, *.js.map, *.css.map, *.min.js, *.min.css, images/fonts/videos.",
         "- Exclude lock/generated files: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lockb, poetry.lock, composer.lock.",
+        "- Exclude infra/system tables by default: migrations, alembic_version, sessions, cache, jobs, logs, audit tables.",
         "- Do NOT pad file count. It is valid to return fewer than 12 if fewer relevant files exist.",
-        "- If uncertain whether a file carries user-facing business knowledge, exclude it.",
+        "- If uncertain whether a file/table carries user-facing business knowledge, exclude it.",
       ].join("\n"),
     },
   ];
@@ -207,41 +254,49 @@ async function pickKnowledgeFilesByLlm(config, candidatePaths) {
   const available = new Set(candidatePaths);
   const knowledgeFiles = unique(
     (Array.isArray(parsed?.knowledge_files) ? parsed.knowledge_files : [])
-      .map((item) => normalizeGlob(item))
+      .map((item) => toPosixPath(String(item || "").trim().replace(/^\.\//, "")))
       .filter((item) => available.has(item)),
   );
-  if (knowledgeFiles.length === 0) {
-    throw new Error("LLM file planning returned no knowledge_files.");
+  const tableKeyMap = new Map();
+  const tableNameMap = new Map();
+  for (const item of tableCandidates) {
+    const key = String(item.key || "").trim();
+    const tableName = String(item.table_name || "").trim().toLowerCase();
+    if (!key) continue;
+    tableKeyMap.set(key.toLowerCase(), key);
+    if (tableName) {
+      if (tableNameMap.has(tableName)) {
+        tableNameMap.set(tableName, "");
+      } else {
+        tableNameMap.set(tableName, key);
+      }
+    }
+  }
+  const rawKnowledgeTables = Array.isArray(parsed?.knowledge_tables)
+    ? parsed.knowledge_tables
+    : Array.isArray(parsed?.knowleadge_tables)
+      ? parsed.knowleadge_tables
+      : [];
+  const knowledgeTables = unique(
+    rawKnowledgeTables
+      .map((item) => {
+        const normalized = String(item || "").trim().toLowerCase();
+        if (!normalized) return "";
+        return tableKeyMap.get(normalized) || tableNameMap.get(normalized) || "";
+      })
+      .filter(Boolean),
+  );
+
+  if (knowledgeFiles.length === 0 && knowledgeTables.length === 0) {
+    throw new Error("LLM file planning returned no knowledge_files/knowledge_tables.");
   }
 
   return {
     framework,
     framework_signals: frameworkSignals,
     knowledge_files: knowledgeFiles,
+    knowledge_tables: knowledgeTables,
     model: llm.model,
-  };
-}
-
-async function planFilesystemScan(cwd, config) {
-  const maxFiles = Number(config?.scan?.max_files || 1200) || 1200;
-  const allFiles = await listFilesRecursive(cwd, {
-    onlyExt: KNOWLEDGE_EXTENSIONS,
-    maxFileSize: 300 * 1024,
-    maxFiles,
-  });
-  const relatives = allFiles.map((fullPath) => toPosixPath(path.relative(cwd, fullPath))).sort();
-  const llmResult = await pickKnowledgeFilesByLlm(config, relatives);
-
-  return {
-    framework: llmResult.framework || "unknown",
-    framework_signals: llmResult.framework_signals || [],
-    total_candidates: relatives.length,
-    matched_paths: llmResult.knowledge_files,
-    llm_assist: {
-      used: true,
-      model: llmResult.model,
-      selected: llmResult.knowledge_files.length,
-    },
   };
 }
 
@@ -268,24 +323,129 @@ function normalizeDbQueryConfig(rawQueries) {
     .filter(Boolean);
 }
 
-function planDatabaseScan(config) {
+function configuredDatabaseQueries(config) {
   const rawQueries = [
     ...toArray(config?.scan?.database_queries),
     ...toArray(config?.scan?.database?.queries),
   ];
-  const queries = normalizeDbQueryConfig(rawQueries);
-  return { queries };
+  return normalizeDbQueryConfig(rawQueries);
 }
 
-function planRemoteScan(config) {
-  const url = String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
-  const maxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
-  const maxPages = Math.max(1, Math.min(maxPagesRaw, 80));
+function clampInt(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(Math.floor(parsed), max));
+}
+
+function sanitizeQueryName(value) {
+  return (
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 96) || "auto_query"
+  );
+}
+
+function sqlitePathForPlan(cwd, absolutePath) {
+  const relative = toPosixPath(path.relative(cwd, absolutePath));
+  if (relative && !relative.startsWith("../") && relative !== "..") {
+    return relative;
+  }
+  return absolutePath;
+}
+
+function tableCandidateKey(sqlitePath, tableName) {
+  return `${sqlitePath}::${tableName}`;
+}
+
+function normalizeSelectedKnowledgeTables(values) {
+  return unique(toArray(values).map((item) => String(item || "").trim()));
+}
+
+async function collectAutoDatabaseCandidates(cwd, config) {
+  const discovered = await discoverSqliteDatabasePaths(cwd, {
+    maxFiles: clampInt(config?.scan?.db_auto_max_files, 20, 500, 220),
+    maxSourceFiles: clampInt(config?.scan?.db_auto_max_source_files, 300, 3000, 1600),
+    maxSourceFileSize: clampInt(config?.scan?.db_auto_max_source_file_size, 16 * 1024, 256 * 1024, 96 * 1024),
+  });
+  const dbPaths = (discovered.paths || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+  const maxCandidates = clampInt(config?.scan?.db_auto_max_candidate_tables, 20, 1200, 360);
+  const tableCandidates = [];
+  let totalTables = 0;
+
+  for (const dbPath of dbPaths) {
+    const tables = await listSqliteTables(dbPath).catch(() => []);
+    totalTables += tables.length;
+    for (const tableName of tables) {
+      const columns = await listSqliteTableColumns(dbPath, tableName).catch(() => []);
+      const sqlitePath = sqlitePathForPlan(cwd, dbPath);
+      tableCandidates.push({
+        key: tableCandidateKey(sqlitePath, tableName),
+        sqlite_path: sqlitePath,
+        table_name: tableName,
+        columns,
+      });
+      if (tableCandidates.length >= maxCandidates) {
+        break;
+      }
+    }
+    if (tableCandidates.length >= maxCandidates) {
+      break;
+    }
+  }
 
   return {
-    sitemap_url: url,
-    max_pages: maxPages,
-    enabled: Boolean(url),
+    table_candidates: tableCandidates,
+    auto_discovery: {
+      database_count: dbPaths.length,
+      table_count: totalTables,
+      candidate_tables: tableCandidates.length,
+      discovered_files: discovered.discovered_files || [],
+      mentioned_tokens: discovered.mentioned_tokens || [],
+      unresolved_tokens: discovered.unresolved_tokens || [],
+    },
+  };
+}
+
+async function buildAutoDatabasePlan(cwd, config, knowledgeTables = [], autoDbCandidates = null) {
+  const candidateBundle = autoDbCandidates || (await collectAutoDatabaseCandidates(cwd, config));
+  const tableCandidates = Array.isArray(candidateBundle?.table_candidates) ? candidateBundle.table_candidates : [];
+  const selectedTableKeys = new Set(normalizeSelectedKnowledgeTables(knowledgeTables));
+
+  const selectedTables = tableCandidates.filter((item) => selectedTableKeys.has(item.key));
+  const maxTables = clampInt(config?.scan?.db_auto_max_tables, 1, 40, 6);
+  const limit = clampInt(config?.scan?.db_auto_query_limit, 1, 300, 80);
+  const queries = selectedTables
+    .slice(0, maxTables)
+    .map((item) => {
+      const dbBase = path.basename(item.sqlite_path).replace(/\.[^.]+$/, "") || "db";
+      const queryName = sanitizeQueryName(`auto_${dbBase}_${item.table_name}`);
+      return {
+        name: queryName,
+        sqlite_path: item.sqlite_path,
+        query: `SELECT * FROM ${quoteSqliteIdentifier(item.table_name)} LIMIT ${limit}`,
+        limit,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    queries,
+    source: queries.length > 0 ? "auto" : "none",
+    auto_discovery: {
+      ...(candidateBundle?.auto_discovery || {
+        database_count: 0,
+        table_count: 0,
+        candidate_tables: 0,
+        discovered_files: [],
+        mentioned_tokens: [],
+        unresolved_tokens: [],
+      }),
+      selected_tables: queries.length,
+    },
   };
 }
 
@@ -300,9 +460,95 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
       createIfMissing: false,
     }).catch(() => ({})));
 
-  const filesystem = await planFilesystemScan(cwd, config);
-  const database = planDatabaseScan(config);
-  const remote = planRemoteScan(config);
+  const configuredQueries = configuredDatabaseQueries(config);
+  const autoDbEnabled = config?.scan?.db_auto !== false;
+  const autoDbCandidates =
+    autoDbEnabled && configuredQueries.length === 0
+      ? await collectAutoDatabaseCandidates(cwd, config)
+      : {
+          table_candidates: [],
+          auto_discovery: {
+            database_count: 0,
+            table_count: 0,
+            candidate_tables: 0,
+            discovered_files: [],
+            mentioned_tokens: [],
+            unresolved_tokens: [],
+          },
+        };
+
+  const maxFiles = Number(config?.scan?.max_files || 1200) || 1200;
+  const allFiles = await listFilesRecursive(cwd, {
+    onlyExt: KNOWLEDGE_EXTENSIONS,
+    maxFileSize: 300 * 1024,
+    maxFiles,
+  });
+  const relatives = allFiles.map((fullPath) => toPosixPath(path.relative(cwd, fullPath))).sort();
+
+  const llmResult = await pickKnowledgesByLlm(config, {
+    candidatePaths: relatives,
+    tableCandidates: autoDbCandidates.table_candidates || [],
+  });
+
+  const filesystem = {
+    framework: llmResult.framework || "unknown",
+    framework_signals: llmResult.framework_signals || [],
+    total_candidates: relatives.length,
+    matched_paths: llmResult.knowledge_files,
+    knowledge_tables: llmResult.knowledge_tables || [],
+    llm_assist: {
+      used: true,
+      model: llmResult.model,
+      selected: llmResult.knowledge_files.length,
+    },
+  };
+
+  let database = null;
+  if (configuredQueries.length > 0) {
+    database = {
+      queries: configuredQueries,
+      source: "configured",
+      auto_discovery: {
+        database_count: 0,
+        table_count: 0,
+        selected_tables: configuredQueries.length,
+        candidate_tables: 0,
+        discovered_files: [],
+        mentioned_tokens: [],
+        unresolved_tokens: [],
+      },
+    };
+  } else if (!autoDbEnabled) {
+    database = {
+      queries: [],
+      source: "none",
+      auto_discovery: {
+        database_count: 0,
+        table_count: 0,
+        selected_tables: 0,
+        candidate_tables: 0,
+        discovered_files: [],
+        mentioned_tokens: [],
+        unresolved_tokens: [],
+      },
+    };
+  } else {
+    database = await buildAutoDatabasePlan(
+      cwd,
+      config,
+      filesystem.knowledge_tables || [],
+      autoDbCandidates,
+    );
+  }
+
+  const remoteUrl = String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
+  const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
+  const remoteMaxPages = Math.max(1, Math.min(remoteMaxPagesRaw, 80));
+  const remote = {
+    sitemap_url: remoteUrl,
+    max_pages: remoteMaxPages,
+    enabled: Boolean(remoteUrl),
+  };
 
   return {
     generated_at: new Date().toISOString(),
@@ -411,35 +657,22 @@ async function collectFilesystemDocs(cwd, matchedPaths) {
   return docs;
 }
 
-function rowToText(row) {
-  if (!row || typeof row !== "object") {
-    return String(row);
-  }
-  return JSON.stringify(row, null, 2);
-}
-
-async function collectDatabaseDocs(cwd, databasePlan, log) {
+async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
   const docs = [];
   const warnings = [];
+  const log = typeof options.log === "function" ? options.log : () => undefined;
+  const limiter = typeof options.limitText === "function" ? options.limitText : (value) => String(value ?? "");
 
   for (const queryItem of databasePlan.queries) {
-    const dbPath = path.isAbsolute(queryItem.sqlite_path)
-      ? queryItem.sqlite_path
-      : path.join(cwd, queryItem.sqlite_path);
+    const dbPath = resolveSqlitePath(cwd, queryItem.sqlite_path);
     try {
-      const { stdout } = await execFileAsync("sqlite3", ["-json", dbPath, queryItem.query], {
+      const rows = await runSqliteJsonQuery(dbPath, queryItem.query, {
         maxBuffer: 8 * 1024 * 1024,
       });
-
-      const rows = JSON.parse(stdout || "[]");
-      if (!Array.isArray(rows)) {
-        continue;
-      }
-
       for (let i = 0; i < rows.length && i < queryItem.limit; i += 1) {
         const row = rows[i];
         const source = `db:${queryItem.name}#${i + 1}`;
-        const text = limitText(rowToText(row), 16000);
+        const text = limiter(stringifyDbRow(row), 16000);
         docs.push({
           id: source,
           source,
@@ -450,9 +683,7 @@ async function collectDatabaseDocs(cwd, databasePlan, log) {
     } catch (error) {
       const message = `database query failed (${queryItem.name}): ${error.message}`;
       warnings.push(message);
-      if (typeof log === "function") {
-        log(message);
-      }
+      log(message);
     }
   }
 
@@ -864,7 +1095,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   if (selections.database) {
     log(t(locale, "执行数据库查询中...", "Running database queries..."));
-    const dbResult = await collectDatabaseDocs(cwd, plan.database, log);
+    const dbResult = await collectDatabaseDocs(cwd, plan.database, { log, limitText });
     docs.push(...dbResult.docs);
     warnings.push(...dbResult.warnings);
     scannedDbRows = dbResult.docs.length;
@@ -911,6 +1142,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     const source = doc.source;
     const previousHash = previousSourceHashes[source];
     const previousDocPath = previousSourceDocMap[source];
+    const currentDocPath = currentSourceDocMap[source];
     const previousIndex = previousIndexMap[source];
 
     if (reset || !previousHash || !previousDocPath || !previousIndex) {
@@ -919,6 +1151,11 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     }
 
     if (previousHash !== currentSourceHashes[source]) {
+      changedSources.push(source);
+      continue;
+    }
+
+    if (previousDocPath !== currentDocPath) {
       changedSources.push(source);
       continue;
     }

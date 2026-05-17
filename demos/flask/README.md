@@ -10,6 +10,8 @@ pip install -r requirements.txt
 python app.py
 ```
 
+When the app starts, it auto-creates SQLite database `data/blog.db` and seeds 3 blog posts into the `posts` table.
+
 ## Install and Run OpenVila in This Folder
 
 ### Using linked CLI (`openvila`)
@@ -38,6 +40,8 @@ Flask routes:
 - /faq
 - /user-agreement
 - /privacy-policy
+- /posts
+- /posts/<slug>
 
 ## Real Project Folder Commands (reference)
 

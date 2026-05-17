@@ -107,19 +107,25 @@ openvila run
 
 `/scan` requires working LLM settings: `openvila_llm_endpoint`, `openvila_llm_api_key`, `openvila_llm_model`.
 
+Database scan behavior:
+- if `scan.database_queries` is configured, `/scan` uses configured queries
+- if not configured and `scan.db_auto` is true (default), `/scan` auto-discovers SQLite DB files/tables, asks LLM to return `knowledge_tables`, then queries only those tables with `SELECT * ... LIMIT`
+- optional auto knobs: `scan.db_auto_max_tables` (default `6`), `scan.db_auto_query_limit` (default `80`), `scan.db_auto_max_candidate_tables` (default `360`)
+- SQLite access uses Node `sqlite3` dependency (no external `sqlite3` CLI requirement)
+
 Output semantics:
 - `knowledges/docs/*.md`: one compiled markdown doc per source file/row/page
 - `knowledges/index.md`: index with `Frequent Customer Concerns` + `All Documents`
 - `knowledges/manifest.json`: source hashes, doc map, `index_map`, frequent source list, llm call stats
 - doc compile batching uses `scan.llm_compile_batch_chars` (default `100000`)
-- scan logs are written to daily rotated logs: `.openvila/logs/scan-YYYY-MM-DD.log`
+- cli logs are written to daily rotated logs: `.openvila/logs/cli-YYYY-MM-DD.log`
 - each LLM call logs request input and response output to the same daily log file
 
 Useful flags:
 - `--dry-run`: preview plan only, no writes
 - `--reset`: force full rebuild instead of incremental update
 - `--yes`: skip interactive confirmation and use defaults
-- `--no-db`: skip configured database queries
+- `--no-db`: skip database queries (configured + auto-discovered)
 - `--no-remote`: skip sitemap crawling
 
 ## Runtime Directory

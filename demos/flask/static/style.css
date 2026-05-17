@@ -82,3 +82,14 @@ main {
   border-radius: 12px;
   padding: 14px;
 }
+
+.meta {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.post-body {
+  white-space: pre-line;
+  color: var(--muted);
+  line-height: 1.8;
+}
