@@ -57,7 +57,7 @@ cd demos/wordpress
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3903
+openvila run
 ```
 
 ### Without link (run local source)
@@ -67,7 +67,7 @@ cd demos/wordpress
 node ../../src/index.js init
 node ../../src/index.js scan
 node ../../src/index.js install --apply
-node ../../src/index.js run --port 3903
+node ../../src/index.js run
 ```
 
 ## Real Project Folder Commands (reference)
@@ -78,5 +78,5 @@ cd /path/to/your-website
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3800
+openvila run
 ```

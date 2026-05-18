@@ -1,10 +1,14 @@
 import { installWidget } from "../core/install.js";
+import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
 export async function runInstall(ctx, argv) {
   const apply = Boolean(argv.options.apply);
   const all = Boolean(argv.options.all);
   const attachStart = Boolean(argv.options["attach-start"]);
+  const config = await loadConfig(ctx.cwd, { createIfMissing: false });
+  const previewPort = Number(config?.run?.port || 9394) || 9394;
+  const previewUrl = `http://127.0.0.1:${previewPort}/widget`;
 
   const result = await installWidget(ctx.cwd, {
     apply,
@@ -14,6 +18,7 @@ export async function runInstall(ctx, argv) {
 
   const linesZh = [
     `预览已生成: ${result.preview}`,
+    `预览链接: ${previewUrl}（请先执行 /run 后再访问）`,
     `脚本已生成: ${result.script}`,
     "",
     "嵌入片段:",
@@ -22,6 +27,7 @@ export async function runInstall(ctx, argv) {
 
   const linesEn = [
     `Preview generated: ${result.preview}`,
+    `Preview URL: ${previewUrl} (run /run first before opening this URL)`,
     `Script generated: ${result.script}`,
     "",
     "Embed snippet:",

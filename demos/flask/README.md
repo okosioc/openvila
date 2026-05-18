@@ -21,7 +21,7 @@ cd demos/flask
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3902
+openvila run
 ```
 
 ### Without link (run local source)
@@ -31,7 +31,7 @@ cd demos/flask
 node ../../src/index.js init
 node ../../src/index.js scan
 node ../../src/index.js install --apply
-node ../../src/index.js run --port 3902
+node ../../src/index.js run
 ```
 
 Flask routes:
@@ -51,5 +51,5 @@ cd /path/to/your-website
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3800
+openvila run
 ```

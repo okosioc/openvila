@@ -14,6 +14,7 @@ function runtimeGitignoreTemplate() {
   return [
     "# OpenVila runtime local ignores",
     "logs/",
+    "chats/",
     "actions/.venv/",
     "**/__pycache__/",
     "*.pyc",
@@ -34,6 +35,7 @@ export function runtimePaths(cwd) {
     actions: path.join(base, "actions"),
     vilas: path.join(base, "vilas"),
     logs: path.join(base, "logs"),
+    chats: path.join(base, "chats"),
     widget: path.join(base, "widget.html"),
     widgetScript: path.join(base, "widget.js"),
     reviewQueue: path.join(base, "logs", "review-queue.json"),
@@ -78,7 +80,7 @@ export function defaultConfig() {
       db_auto_query_limit: 80,
     },
     run: {
-      port: 3800,
+      port: 9394,
       owner_token: generateOwnerToken(),
     },
     install: {
@@ -143,6 +145,7 @@ async function ensureRuntimeDirectories(paths) {
   await ensureDir(paths.actions);
   await ensureDir(paths.vilas);
   await ensureDir(paths.logs);
+  await ensureDir(paths.chats);
 }
 
 async function ensureRuntimeFiles(cwd, paths, options = {}) {

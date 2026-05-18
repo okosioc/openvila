@@ -14,6 +14,8 @@ const ASCII_LOGO = [
   "|_______||___|    |_______||_|  |__|  |___|  |___| |_______||__| |__|"
 ];
 
+const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
+
 function commandSuggestions(locale) {
   return [
     { cmd: "/init", desc: pick(locale, "初始化运行目录", "initialize runtime directory") },
@@ -25,7 +27,7 @@ function commandSuggestions(locale) {
     { cmd: "/action pending", desc: pick(locale, "查看待审批请求", "list pending requests") },
     { cmd: "/vila list", desc: pick(locale, "查看精灵列表", "list installed vilas") },
     { cmd: "/channel list", desc: pick(locale, "查看通道配置", "show channel config") },
-    { cmd: "/run --port 3800", desc: pick(locale, "启动聊天服务", "start chat service") },
+    { cmd: "/run", desc: pick(locale, "启动聊天服务", "start chat service") },
     { cmd: "/help", desc: pick(locale, "显示帮助", "show help") },
     { cmd: "/exit", desc: pick(locale, "退出管理终端", "exit manager") },
   ];
@@ -36,6 +38,15 @@ function splitLogLines(text) {
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0);
+}
+
+function hyperlinkUrlsForTerminal(text) {
+  const raw = String(text ?? "");
+  if (!raw || !process.stdout.isTTY) {
+    return raw;
+  }
+
+  return raw.replace(URL_PATTERN, (url) => `\u001B]8;;${url}\u0007${url}\u001B]8;;\u0007`);
 }
 
 function statusText(locale, ready) {
@@ -368,7 +379,9 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
         flexGrow: 1,
       },
       ...(logs.length > 0
-        ? logs.map((line, idx) => h(Text, { key: `log-${idx}`, color: "yellow" }, line))
+        ? logs.map((line, idx) =>
+            h(Text, { key: `log-${idx}`, color: "yellow" }, hyperlinkUrlsForTerminal(line)),
+          )
         : [h(Text, { key: "log-empty", color: "yellow" }, pick(ctx.locale, "no logs", "no logs"))]),
     ),
     suggestions.length > 0

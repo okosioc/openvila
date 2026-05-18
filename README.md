@@ -38,7 +38,7 @@ You can still run direct commands:
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3800
+openvila run
 ```
 
 ### Local source mode (for developing/testing this repo)
@@ -56,7 +56,7 @@ Then in any target website directory (including demos):
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3800
+openvila run
 ```
 
 If you do not want `npm link`, run from this repo root with explicit path:
@@ -65,7 +65,7 @@ If you do not want `npm link`, run from this repo root with explicit path:
 node src/index.js init
 node src/index.js scan
 node src/index.js install --apply
-node src/index.js run --port 3800
+node src/index.js run
 ```
 
 ## Commands
@@ -82,7 +82,7 @@ node src/index.js run --port 3800
 /vila install demo --file ./demo-vila.json
 /channel set telegram --bot-token xxx --chat-id yyy
 /channel set feishu --webhook https://open.feishu.cn/...
-/run --port 3800
+/run [--port 9394]
 ```
 
 Direct command mode is also supported:
@@ -124,7 +124,7 @@ Output semantics:
 - `knowledges/index.md`: index with `Frequent Customer Concerns` + `All Documents`
 - `knowledges/manifest.json`: source hashes, doc map, `index_map`, frequent source list, llm call stats
 - doc compile batching uses `scan.llm_compile_batch_chars` (default `100000`)
-- cli logs are written to daily rotated logs: `.openvila/logs/cli-YYYY-MM-DD.log`
+- all CLI logs are written to daily rotated logs: `.openvila/logs/debug-YYYY-MM-DD.log`
 - each LLM call logs request input and response output to the same daily log file
 
 Useful flags:

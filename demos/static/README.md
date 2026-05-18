@@ -16,7 +16,7 @@ cd demos/static
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3901
+openvila run
 ```
 
 ### Without link (run local source)
@@ -26,7 +26,7 @@ cd demos/static
 node ../../src/index.js init
 node ../../src/index.js scan
 node ../../src/index.js install --apply
-node ../../src/index.js run --port 3901
+node ../../src/index.js run
 ```
 
 ## Real Project Folder Commands (reference)
@@ -37,5 +37,5 @@ cd /path/to/your-website
 openvila init
 openvila scan
 openvila install --apply
-openvila run --port 3800
+openvila run
 ```

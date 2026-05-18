@@ -4,7 +4,7 @@ import { pick } from "../i18n/messages.js";
 
 export async function runRun(ctx, argv) {
   const config = await loadConfig(ctx.cwd);
-  const port = Number(argv.options.port || config.run.port || 3800);
+  const port = Number(argv.options.port || config.run.port || 9394);
 
   const service = await startChatService(ctx.cwd, config, { port });
 
