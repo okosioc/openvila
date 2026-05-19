@@ -54,7 +54,6 @@
 
   var widgetConfig = resolveConfig();
   var apiBase = buildApiBase(widgetConfig);
-  var VISITOR_ID_KEY = "openvila_visitor_id";
   var SESSION_ID_KEY = "openvila_session_id";
   var CHAT_HISTORY_LIMIT = 200;
 
@@ -85,12 +84,6 @@
   }
 
   function getOrCreateIdentity() {
-    var visitorId = readStorage(window.localStorage, VISITOR_ID_KEY);
-    if (!visitorId) {
-      visitorId = generateId("visitor");
-      writeStorage(window.localStorage, VISITOR_ID_KEY, visitorId);
-    }
-
     var sessionId = readStorage(window.localStorage, SESSION_ID_KEY);
     if (!sessionId) {
       sessionId = generateId("session");
@@ -98,7 +91,6 @@
     }
 
     return {
-      visitorId: visitorId,
       sessionId: sessionId
     };
   }
@@ -189,7 +181,6 @@
   async function requestChatHistory(identity) {
     var query = new URLSearchParams({
       session_id: identity.sessionId,
-      visitor_id: identity.visitorId,
       limit: String(CHAT_HISTORY_LIMIT)
     });
     var res = await fetch(apiBase + "/chat/history?" + query.toString(), {
@@ -214,7 +205,6 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: message,
-        visitor_id: identity.visitorId,
         session_id: identity.sessionId
       })
     });
@@ -331,7 +321,6 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             message: text,
-            visitor_id: chatIdentity.visitorId,
             session_id: chatIdentity.sessionId
           })
         });

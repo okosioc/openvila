@@ -1106,8 +1106,10 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
   return output;
 }
 
-function sectionForEntry(heading, item) {
-  return [
+function sectionForEntry(heading, item, options = {}) {
+  const includeEmbeddedContent = Boolean(options.includeEmbeddedContent);
+  const embeddedContent = String(options.embeddedContent || "").trim();
+  const lines = [
     `### ${heading}`,
     item.title || "-",
     `**Keywords**: ${(item.tags || []).join(", ") || "-"}`,
@@ -1115,14 +1117,55 @@ function sectionForEntry(heading, item) {
     `**Frequent Customer Concern**: ${item.is_frequently_asked ? "yes" : "no"}`,
     `**Doc**: ${item.doc_path}`,
     "",
-  ].join("\n");
+  ];
+
+  if (includeEmbeddedContent) {
+    lines.push("#### Embedded Content", "");
+    lines.push(embeddedContent || "(content unavailable)", "");
+  }
+
+  return lines.join("\n");
 }
 
-function renderIndexMarkdown({ locale, generatedAt, scanMode, indexMap }) {
+function extractCompiledDocBody(markdown) {
+  const text = String(markdown || "").replace(/\r\n?/g, "\n");
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const lines = trimmed.split("\n");
+  const contentHeadingPattern = /^##\s+(正文|content)\s*$/i;
+  const startIndex = lines.findIndex((line) => contentHeadingPattern.test(line.trim()));
+  if (startIndex < 0) {
+    return trimmed;
+  }
+
+  const body = lines.slice(startIndex + 1).join("\n").trim();
+  return body || trimmed;
+}
+
+async function loadFrequentDocContents(paths, frequentItems) {
+  const output = new Map();
+  for (const item of frequentItems) {
+    const docPath = normalizeStoredPath(item?.doc_path, "docs");
+    if (!docPath) {
+      output.set(item?.doc_path || "", "");
+      continue;
+    }
+    const absolute = storedPathToAbsolute(paths.knowledges, docPath);
+    const content = (await readTextSafe(absolute)) || "";
+    output.set(item.doc_path, extractCompiledDocBody(content));
+  }
+  return output;
+}
+
+async function renderIndexMarkdown({ locale, generatedAt, scanMode, indexMap, paths }) {
   const entries = Object.entries(indexMap || {}).map(([source, item]) => ({ source, ...item }));
   entries.sort((a, b) => String(a.doc_path || "").localeCompare(String(b.doc_path || "")));
 
   const frequentItems = entries.filter((item) => Boolean(item.is_frequently_asked));
+  const frequentDocContents = await loadFrequentDocContents(paths, frequentItems);
 
   const lines = [
     "# Knowledge Index",
@@ -1143,7 +1186,12 @@ function renderIndexMarkdown({ locale, generatedAt, scanMode, indexMap }) {
   } else {
     for (const item of frequentItems) {
       const heading = path.posix.basename(item.doc_path || item.source || "document.md");
-      lines.push(sectionForEntry(heading, item));
+      lines.push(
+        sectionForEntry(heading, item, {
+          includeEmbeddedContent: true,
+          embeddedContent: frequentDocContents.get(item.doc_path) || "",
+        }),
+      );
     }
   }
 
@@ -1427,11 +1475,12 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       "6/6 Rebuilding index.md (and writing manifest.json) ...",
     ),
   );
-  const indexMarkdown = renderIndexMarkdown({
+  const indexMarkdown = await renderIndexMarkdown({
     locale,
     generatedAt: nowIso,
     scanMode: reset ? "reset" : "incremental",
     indexMap: finalIndexMap,
+    paths,
   });
 
   const allSourcesOrder = Object.entries(finalIndexMap)

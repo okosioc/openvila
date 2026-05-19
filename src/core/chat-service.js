@@ -6,6 +6,7 @@ import { approveReviewItem, listActions, listReviewQueue, queueActionReview, rej
 import { notifyChannels } from "./channels.js";
 import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
 import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
+import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
 
@@ -67,7 +68,60 @@ function parseBody(req) {
 const DEFAULT_CHAT_HISTORY_LIMIT = 200;
 const MAX_CHAT_HISTORY_LIMIT = 800;
 const MAX_CHAT_MESSAGES_PER_SESSION = 800;
+const DOC_SELECT_HISTORY_LIMIT = 20;
+const DOC_SELECT_HISTORY_ITEM_MAX_CHARS = 400;
+const DOC_SELECT_FREQUENT_SECTION_MAX_CHARS = 180000;
+const DOC_SELECT_DIRECT_ANSWER_MIN_CONFIDENCE = 0.85;
 const chatWriteQueues = new Map();
+const MAX_LOG_FIELD_LENGTH = 260;
+
+function oneLine(value) {
+  return String(value ?? "")
+    .replace(/\r\n/g, " ")
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ")
+    .trim();
+}
+
+function sanitizeLogField(value, maxLen = MAX_LOG_FIELD_LENGTH) {
+  const normalized = oneLine(value);
+  if (!normalized) {
+    return "-";
+  }
+  if (normalized.length <= maxLen) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLen)}...`;
+}
+
+function readRequestMeta(req) {
+  const headers = req?.headers || {};
+  return {
+    remote: sanitizeLogField(req?.socket?.remoteAddress || ""),
+    forwarded_for: sanitizeLogField(headers["x-forwarded-for"] || ""),
+    user_agent: sanitizeLogField(headers["user-agent"] || ""),
+    referer: sanitizeLogField(headers.referer || ""),
+  };
+}
+
+function writeChatSessionLog(eventName, req, identity, extra = {}) {
+  const safeIdentity = identity && typeof identity === "object" ? identity : {};
+  const meta = readRequestMeta(req);
+  const lines = [
+    `[chat] ${sanitizeLogField(eventName, 64)}`,
+    `session_id: ${sanitizeLogField(safeIdentity.session_id || "")}`,
+    `remote: ${meta.remote}`,
+    `x_forwarded_for: ${meta.forwarded_for}`,
+    `user_agent: ${meta.user_agent}`,
+    `referer: ${meta.referer}`,
+  ];
+
+  for (const [key, value] of Object.entries(extra)) {
+    lines.push(`${sanitizeLogField(key, 64)}: ${sanitizeLogField(value)}`);
+  }
+
+  writeGlobalLog(lines.join("\n"));
+}
 
 function normalizeIdentityValue(value, maxLen = 96) {
   const normalized = String(value || "")
@@ -82,7 +136,6 @@ function normalizeIdentityValue(value, maxLen = 96) {
 function resolveChatIdentity(input) {
   const source = input && typeof input === "object" ? input : {};
   return {
-    visitor_id: normalizeIdentityValue(source.visitor_id, 96),
     session_id: normalizeIdentityValue(source.session_id, 96),
   };
 }
@@ -179,20 +232,21 @@ async function readChatSession(paths, sessionId) {
 
   return {
     session_id: normalizeIdentityValue(parsed.session_id, 96) || sessionId,
-    visitor_id: normalizeIdentityValue(parsed.visitor_id, 96),
     created_at: typeof parsed.created_at === "string" && parsed.created_at ? parsed.created_at : "",
     updated_at: typeof parsed.updated_at === "string" && parsed.updated_at ? parsed.updated_at : "",
     messages: messages.slice(-MAX_CHAT_MESSAGES_PER_SESSION),
   };
 }
 
-async function appendChatMessages(paths, identity, entries) {
+async function appendChatMessages(paths, identity, entries, context = {}) {
+  const contextSafe = context && typeof context === "object" ? context : {};
+  const route = contextSafe.route || "-";
+  const mode = contextSafe.mode || "-";
   const sessionId = identity.session_id;
   if (!sessionId) {
     return null;
   }
 
-  const visitorId = identity.visitor_id;
   const normalizedEntries = Array.isArray(entries)
     ? entries
         .map((entry) => {
@@ -218,24 +272,32 @@ async function appendChatMessages(paths, identity, entries) {
 
   return enqueueSessionWrite(sessionId, async () => {
     const now = new Date().toISOString();
-    const current = (await readChatSession(paths, sessionId)) || {
+    const existing = await readChatSession(paths, sessionId);
+    const current = existing || {
       session_id: sessionId,
-      visitor_id: "",
       created_at: now,
       updated_at: now,
       messages: [],
     };
 
-    if (visitorId) {
-      current.visitor_id = visitorId;
-    }
     if (!current.created_at) {
       current.created_at = now;
     }
     current.updated_at = now;
     current.messages = [...current.messages, ...normalizedEntries].slice(-MAX_CHAT_MESSAGES_PER_SESSION);
 
-    await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(current, null, 2)}\n`, "utf8");
+    const targetPath = sessionFilePath(paths, sessionId);
+    if (!existing) {
+      const firstUser = normalizedEntries.find((item) => item.role === "user");
+      writeChatSessionLog("chat_session_started", contextSafe.req, identity, {
+        route,
+        mode,
+        file: path.basename(targetPath),
+        first_user_len: firstUser ? firstUser.content.length : 0,
+        first_user_preview: firstUser ? firstUser.content.slice(0, 120) : "",
+      });
+    }
+    await fs.writeFile(targetPath, `${JSON.stringify(current, null, 2)}\n`, "utf8");
     return current;
   });
 }
@@ -285,48 +347,130 @@ function getAuthToken(req) {
   return matched ? matched[1] : null;
 }
 
-async function selectDocs(cwd, config, index, question) {
+function truncateText(value, maxChars) {
+  const text = String(value || "");
+  if (!Number.isFinite(maxChars) || maxChars <= 0) {
+    return text;
+  }
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, maxChars)}\n...[truncated]`;
+}
+
+function extractFrequentSection(indexMarkdown) {
+  const raw = String(indexMarkdown || "");
+  if (!raw.trim()) {
+    return "";
+  }
+
+  const startTitle = "## Frequent Customer Concerns";
+  const endTitle = "## All Documents";
+  const start = raw.indexOf(startTitle);
+  if (start < 0) {
+    return "";
+  }
+
+  const fromStart = raw.slice(start);
+  const endOffset = fromStart.indexOf(endTitle);
+  const section = endOffset >= 0 ? fromStart.slice(0, endOffset) : fromStart;
+  return truncateText(section.trim(), DOC_SELECT_FREQUENT_SECTION_MAX_CHARS);
+}
+
+function renderDocSelectHistory(chatHistory, limit = DOC_SELECT_HISTORY_LIMIT) {
+  const items = Array.isArray(chatHistory) ? chatHistory.slice(-limit) : [];
+  if (items.length === 0) {
+    return "(none)";
+  }
+
+  return items
+    .map((item) => {
+      const role = item?.role === "assistant" ? "assistant" : item?.role === "system" ? "system" : "user";
+      const content = normalizeChatContent(item?.content || "");
+      if (!content) {
+        return null;
+      }
+      const preview =
+        content.length > DOC_SELECT_HISTORY_ITEM_MAX_CHARS
+          ? `${content.slice(0, DOC_SELECT_HISTORY_ITEM_MAX_CHARS)}...`
+          : content;
+      return `[${role}] ${preview}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function selectDocs(cwd, config, index, question, chatHistory = []) {
   void cwd;
   const map = index.index_map || {};
   const entries = Object.entries(map);
   if (entries.length === 0) {
-    return [];
+    return {
+      mode: "docs",
+      doc_paths: [],
+    };
   }
 
   const listing = entries
     .slice(0, 220)
     .map(([source, item]) => `${item.doc_path} | ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
     .join("\n");
+  const historyText = renderDocSelectHistory(chatHistory, DOC_SELECT_HISTORY_LIMIT);
 
+  const frequentContext = extractFrequentSection(index.index_markdown || "");
+  const frequentText = frequentContext || "(none)";
   const messages = [
     {
       role: "system",
       content:
-        "You are a retrieval planner. Return only JSON object like {\"doc_paths\":[\"docs/...md\"]}. Choose at most 4 doc paths.",
+        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, set confidence between 0 and 1, and doc_paths=[]. (2) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list.",
     },
     {
       role: "user",
-      content: `Question:\n${question}\n\nDocument index:\n${listing}`,
+      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listing}`,
     },
   ];
 
-  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 180, trace: "chat:doc_select" });
+  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 1100, trace: "chat:doc_select" });
   if (picked.ok) {
     const maybe = extractJsonObject(picked.content);
+    const canAnswerDirectly = Boolean(maybe?.can_answer_directly);
+    const directAnswer = String(maybe?.direct_answer || "").trim();
+    const confidenceRaw = Number(maybe?.confidence);
+    const confidence = Number.isFinite(confidenceRaw) ? confidenceRaw : 0;
+    if (canAnswerDirectly && directAnswer && confidence >= DOC_SELECT_DIRECT_ANSWER_MIN_CONFIDENCE) {
+      return {
+        mode: "direct",
+        direct_answer: directAnswer,
+        confidence,
+      };
+    }
+
     if (maybe && Array.isArray(maybe.doc_paths)) {
       const available = new Set(entries.map(([, item]) => item.doc_path));
       const finalPaths = maybe.doc_paths.filter((p) => available.has(p)).slice(0, 4);
       if (finalPaths.length > 0) {
-        return finalPaths;
+        return {
+          mode: "docs",
+          doc_paths: finalPaths,
+        };
       }
     }
   }
 
-  return entries.slice(0, 4).map(([, item]) => item.doc_path).filter(Boolean);
+  return {
+    mode: "docs",
+    doc_paths: entries.slice(0, 4).map(([, item]) => item.doc_path).filter(Boolean),
+  };
 }
 
-async function answerFromKnowledge(cwd, config, message) {
+async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
   const index = await loadKnowledgeIndex(cwd);
+  const paths = runtimePaths(cwd);
+  const indexMarkdown = (await readTextSafe(paths.knowledgeIndex)) || "";
+  if (indexMarkdown) {
+    index.index_markdown = indexMarkdown;
+  }
   const map = index.index_map || {};
   const entries = Object.entries(map);
   if (entries.length === 0) {
@@ -336,9 +480,27 @@ async function answerFromKnowledge(cwd, config, message) {
     };
   }
 
-  const docPaths = await selectDocs(cwd, config, index, message);
+  //
+  // 1. 选择文档：基于用户问题和知识库索引，选择最相关的文档路径。
+  // e.g,
+  // - {"doc_paths":["docs/fs-pricing-html.md","docs/fs-faq-html.md","docs/fs-user-agreement-html.md"]}
+  //
+  const docSelection = await selectDocs(cwd, config, index, message, chatHistory);
+  if (docSelection.mode === "direct" && docSelection.direct_answer) {
+    return {
+      ok: true,
+      answer: docSelection.direct_answer,
+      doc_paths: [],
+      answered_by: "doc_select",
+    };
+  }
+
+  const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
   const selectedDocs = await loadDocContents(cwd, docPaths);
 
+  //
+  // 2. 生成答案：将用户问题、知识库索引和选中文档内容一起发送给语言模型，生成基于知识库的回答。
+  //
   const indexText = entries
     .slice(0, 300)
     .map(([source, item]) => `- ${item.doc_path}: ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
@@ -352,7 +514,7 @@ async function answerFromKnowledge(cwd, config, message) {
     {
       role: "system",
       content:
-        "You are OpenVila assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. Reply in the same language as user input.",
+        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. Reply in the same language as user input.",
     },
     {
       role: "user",
@@ -372,10 +534,16 @@ async function answerFromKnowledge(cwd, config, message) {
   };
 }
 
-async function answerFromKnowledgeStream(cwd, config, message, handlers = {}) {
+// 核心逻辑! 通过知识库索引选择相关文档，并基于索引和文档内容生成答案，同时支持流式返回增量结果和状态更新。
+async function answerFromKnowledgeStream(cwd, config, message, chatHistory = [], handlers = {}) {
   const onDelta = typeof handlers.onDelta === "function" ? handlers.onDelta : () => undefined;
   const onStatus = typeof handlers.onStatus === "function" ? handlers.onStatus : () => undefined;
   const index = await loadKnowledgeIndex(cwd);
+  const paths = runtimePaths(cwd);
+  const indexMarkdown = (await readTextSafe(paths.knowledgeIndex)) || "";
+  if (indexMarkdown) {
+    index.index_markdown = indexMarkdown;
+  }
   const map = index.index_map || {};
   const entries = Object.entries(map);
   if (entries.length === 0) {
@@ -386,7 +554,18 @@ async function answerFromKnowledgeStream(cwd, config, message, handlers = {}) {
   }
 
   onStatus("...");
-  const docPaths = await selectDocs(cwd, config, index, message);
+  const docSelection = await selectDocs(cwd, config, index, message, chatHistory);
+  if (docSelection.mode === "direct" && docSelection.direct_answer) {
+    onDelta(docSelection.direct_answer);
+    return {
+      ok: true,
+      answer: docSelection.direct_answer,
+      doc_paths: [],
+      answered_by: "doc_select",
+    };
+  }
+
+  const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
   const selectedDocs = await loadDocContents(cwd, docPaths);
 
   const indexText = entries
@@ -402,7 +581,7 @@ async function answerFromKnowledgeStream(cwd, config, message, handlers = {}) {
     {
       role: "system",
       content:
-        "You are OpenVila assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. Reply in the same language as user input.",
+        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. Reply in the same language as user input.",
     },
     {
       role: "user",
@@ -466,19 +645,17 @@ export async function startChatService(cwd, config, options = {}) {
       if (req.method === "GET" && url.pathname === "/chat/history") {
         const identity = resolveChatIdentity({
           session_id: url.searchParams.get("session_id") || "",
-          visitor_id: url.searchParams.get("visitor_id") || "",
         });
+        const limit = parseHistoryLimit(url.searchParams.get("limit"));
         if (!identity.session_id) {
           sendJson(res, 400, { error: "session_id is required" });
           return;
         }
 
-        const limit = parseHistoryLimit(url.searchParams.get("limit"));
         const messages = await loadChatHistory(paths, identity.session_id, limit);
         sendJson(res, 200, {
           ok: true,
           session_id: identity.session_id,
-          visitor_id: identity.visitor_id,
           messages,
         });
         return;
@@ -516,7 +693,11 @@ export async function startChatService(cwd, config, options = {}) {
           await appendChatMessages(paths, identity, [
             { role: "user", content: message },
             { role: "assistant", content: actionAnswerText },
-          ]).catch(() => undefined);
+          ], {
+            req,
+            route: "/chat",
+            mode: "action",
+          }).catch(() => undefined);
 
           sendJson(res, 200, {
             ok: true,
@@ -524,7 +705,6 @@ export async function startChatService(cwd, config, options = {}) {
             request_id: queued.id,
             status: queued.status,
             session_id: identity.session_id,
-            visitor_id: identity.visitor_id,
           });
           return;
         }
@@ -536,17 +716,21 @@ export async function startChatService(cwd, config, options = {}) {
           await appendChatMessages(paths, identity, [
             { role: "user", content: message },
             { role: "assistant", content: supportAnswerText },
-          ]).catch(() => undefined);
+          ], {
+            req,
+            route: "/chat",
+            mode: "human_support",
+          }).catch(() => undefined);
           sendJson(res, 200, {
             ok: true,
             answer: supportAnswerText,
             session_id: identity.session_id,
-            visitor_id: identity.visitor_id,
           });
           return;
         }
 
-        const answer = await answerFromKnowledge(cwd, config, message);
+        const recentHistory = await loadChatHistory(paths, identity.session_id, DOC_SELECT_HISTORY_LIMIT);
+        const answer = await answerFromKnowledge(cwd, config, message, recentHistory);
         if (!answer.ok) {
           sendJson(res, 500, {
             ok: false,
@@ -559,18 +743,22 @@ export async function startChatService(cwd, config, options = {}) {
         await appendChatMessages(paths, identity, [
           { role: "user", content: message },
           { role: "assistant", content: answer.answer },
-        ]).catch(() => undefined);
+        ], {
+          req,
+          route: "/chat",
+          mode: "knowledge_answer",
+        }).catch(() => undefined);
 
         sendJson(res, 200, {
           ok: true,
           answer: answer.answer,
           doc_paths: answer.doc_paths,
           session_id: identity.session_id,
-          visitor_id: identity.visitor_id,
         });
         return;
       }
 
+      // 核心逻辑! 聊天接口, 支持流式返回增量结果和状态更新，同时处理基于知识库的问答、动作请求和人工支持请求。
       if (req.method === "POST" && url.pathname === "/chat/stream") {
         const body = await parseBody(req);
         const message = String(body.message || "").trim();
@@ -584,7 +772,6 @@ export async function startChatService(cwd, config, options = {}) {
         writeNdjsonLine(res, {
           type: "start",
           session_id: identity.session_id,
-          visitor_id: identity.visitor_id,
         });
 
         const actionReq = parseActionRequest(message);
@@ -611,7 +798,11 @@ export async function startChatService(cwd, config, options = {}) {
           await appendChatMessages(paths, identity, [
             { role: "user", content: message },
             { role: "assistant", content: actionAnswerText },
-          ]).catch(() => undefined);
+          ], {
+            req,
+            route: "/chat/stream",
+            mode: "action",
+          }).catch(() => undefined);
 
           writeNdjsonLine(res, {
             type: "delta",
@@ -623,7 +814,6 @@ export async function startChatService(cwd, config, options = {}) {
             request_id: queued.id,
             status: queued.status,
             session_id: identity.session_id,
-            visitor_id: identity.visitor_id,
           });
           res.end();
           return;
@@ -636,7 +826,11 @@ export async function startChatService(cwd, config, options = {}) {
           await appendChatMessages(paths, identity, [
             { role: "user", content: message },
             { role: "assistant", content: supportAnswerText },
-          ]).catch(() => undefined);
+          ], {
+            req,
+            route: "/chat/stream",
+            mode: "human_support",
+          }).catch(() => undefined);
           writeNdjsonLine(res, {
             type: "delta",
             text: supportAnswerText,
@@ -645,13 +839,13 @@ export async function startChatService(cwd, config, options = {}) {
             type: "done",
             ok: true,
             session_id: identity.session_id,
-            visitor_id: identity.visitor_id,
           });
           res.end();
           return;
         }
 
-        const answer = await answerFromKnowledgeStream(cwd, config, message, {
+        const recentHistory = await loadChatHistory(paths, identity.session_id, DOC_SELECT_HISTORY_LIMIT);
+        const answer = await answerFromKnowledgeStream(cwd, config, message, recentHistory, {
           onStatus: (text) => writeNdjsonLine(res, { type: "status", text }),
           onDelta: (text) => writeNdjsonLine(res, { type: "delta", text }),
         });
@@ -669,7 +863,11 @@ export async function startChatService(cwd, config, options = {}) {
         await appendChatMessages(paths, identity, [
           { role: "user", content: message },
           { role: "assistant", content: answer.answer },
-        ]).catch(() => undefined);
+        ], {
+          req,
+          route: "/chat/stream",
+          mode: "knowledge_answer",
+        }).catch(() => undefined);
 
         writeNdjsonLine(res, {
           type: "done",
@@ -677,7 +875,6 @@ export async function startChatService(cwd, config, options = {}) {
           answer: answer.answer,
           doc_paths: answer.doc_paths,
           session_id: identity.session_id,
-          visitor_id: identity.visitor_id,
         });
         res.end();
         return;
