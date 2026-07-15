@@ -404,13 +404,6 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
   void cwd;
   const map = index.index_map || {};
   const entries = Object.entries(map);
-  if (entries.length === 0) {
-    return {
-      mode: "docs",
-      doc_paths: [],
-    };
-  }
-
   const listing = entries
     .slice(0, 220)
     .map(([source, item]) => `${item.doc_path} | ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
@@ -419,15 +412,16 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
 
   const frequentContext = extractFrequentSection(index.index_markdown || "");
   const frequentText = frequentContext || "(none)";
+  const listingText = listing || "(none)";
   const messages = [
     {
       role: "system",
       content:
-        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, set confidence between 0 and 1, and doc_paths=[]. (2) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list.",
+        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[]. (2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. (3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list. (4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[].",
     },
     {
       role: "user",
-      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listing}`,
+      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listingText}`,
     },
   ];
 
@@ -473,12 +467,6 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
   }
   const map = index.index_map || {};
   const entries = Object.entries(map);
-  if (entries.length === 0) {
-    return {
-      ok: false,
-      error: "Knowledge base is empty. Run /scan first.",
-    };
-  }
 
   //
   // 1. 选择文档：基于用户问题和知识库索引，选择最相关的文档路径。
@@ -492,6 +480,13 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
       answer: docSelection.direct_answer,
       doc_paths: [],
       answered_by: "doc_select",
+    };
+  }
+
+  if (entries.length === 0) {
+    return {
+      ok: false,
+      error: "Knowledge base is empty. Run /scan first.",
     };
   }
 
@@ -546,12 +541,6 @@ async function answerFromKnowledgeStream(cwd, config, message, chatHistory = [],
   }
   const map = index.index_map || {};
   const entries = Object.entries(map);
-  if (entries.length === 0) {
-    return {
-      ok: false,
-      error: "Knowledge base is empty. Run /scan first.",
-    };
-  }
 
   onStatus("...");
   const docSelection = await selectDocs(cwd, config, index, message, chatHistory);
@@ -562,6 +551,13 @@ async function answerFromKnowledgeStream(cwd, config, message, chatHistory = [],
       answer: docSelection.direct_answer,
       doc_paths: [],
       answered_by: "doc_select",
+    };
+  }
+
+  if (entries.length === 0) {
+    return {
+      ok: false,
+      error: "Knowledge base is empty. Run /scan first.",
     };
   }
 
