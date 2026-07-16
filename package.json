@@ -13,6 +13,7 @@
   },
   "scripts": {
     "start": "node ./src/index.js",
+    "test": "node --test",
     "lint": "node -e \"console.log('No lint configured')\"",
     "prepublishOnly": "npm pack --dry-run"
   },

@@ -2,11 +2,14 @@ import { startChatService } from "../core/chat-service.js";
 import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
-export async function runRun(ctx, argv) {
-  const config = await loadConfig(ctx.cwd);
+export async function runRun(ctx, argv, dependencies = {}) {
+  const loadRuntimeConfig = dependencies.loadConfig || loadConfig;
+  const startService = dependencies.startChatService || startChatService;
+  const runtimeProcess = dependencies.process || process;
+  const config = await loadRuntimeConfig(ctx.cwd);
   const port = Number(argv.options.port || config.run.port || 9394);
 
-  const service = await startChatService(ctx.cwd, config, { port });
+  const service = await startService(ctx.cwd, config, { port });
 
   ctx.log(
     pick(
@@ -34,13 +37,13 @@ export async function runRun(ctx, argv) {
 
   await new Promise((resolve) => {
     const stop = async () => {
-      process.off("SIGINT", stop);
-      process.off("SIGTERM", stop);
+      runtimeProcess.off("SIGINT", stop);
+      runtimeProcess.off("SIGTERM", stop);
       await service.close().catch(() => undefined);
       resolve();
     };
 
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
+    runtimeProcess.on("SIGINT", stop);
+    runtimeProcess.on("SIGTERM", stop);
   });
 }

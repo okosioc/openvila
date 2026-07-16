@@ -119,14 +119,17 @@ async function confirmSelections(ctx, plan, defaults) {
   }
 }
 
-export async function runScan(ctx, argv) {
+export async function runScan(ctx, argv, dependencies = {}) {
   const log = (line) => ctx.log(String(line ?? ""));
+  const loadRuntimeConfig = dependencies.loadConfig || loadConfig;
+  const prepareScanPlan = dependencies.prepareKnowledgeScanPlan || prepareKnowledgeScanPlan;
+  const buildKnowledge = dependencies.buildKnowledgeBase || buildKnowledgeBase;
 
   try {
     const dryRun = Boolean(argv.options["dry-run"]);
     const assumeYes = Boolean(argv.options.yes);
     const reset = Boolean(argv.options.reset);
-    const config = await loadConfig(ctx.cwd, { createIfMissing: false });
+    const config = await loadRuntimeConfig(ctx.cwd, { createIfMissing: false });
 
     if (typeof ctx.logFilePath === "string" && ctx.logFilePath) {
       log(pick(ctx.locale, `[scan] 日志文件: ${ctx.logFilePath}`, `[scan] Log file: ${ctx.logFilePath}`));
@@ -139,7 +142,7 @@ export async function runScan(ctx, argv) {
         "[scan] 1/6-3/6 Building scan plan (LLM framework/knowledge-file analysis + scope preview)...",
       ),
     );
-    const plan = await prepareKnowledgeScanPlan(ctx.cwd, { config });
+    const plan = await prepareScanPlan(ctx.cwd, { config });
     log(renderScanPlan(ctx, plan));
 
     if (dryRun) {
@@ -172,7 +175,7 @@ export async function runScan(ctx, argv) {
       ),
     );
 
-    const result = await buildKnowledgeBase(ctx.cwd, {
+    const result = await buildKnowledge(ctx.cwd, {
       config,
       plan,
       selections,

@@ -256,12 +256,35 @@ You can view configured channels with `openvila channel list` and remove one wit
 
 ## Demos
 
-Use demo websites under `demos/`:
+The `demos/` directory contains five local websites for testing scanning, widget installation, and chat. Every demo includes User Agreement, Pricing, FAQ, and Privacy Policy pages.
 
-- `demos/static`: static HTML website
-- `demos/flask`: Flask website (`templates/` included)
+Before testing a demo, install and link the local CLI from the repository root:
 
-Both demos include pages for User Agreement, Pricing, FAQ, and Privacy Policy.
+```bash
+npm install
+npm link
+```
+
+Start the selected website in one terminal. In another terminal, run OpenVila from that demo directory:
+
+```bash
+openvila init
+openvila scan
+openvila install --apply
+openvila run
+```
+
+If you do not use `npm link`, replace `openvila` with `node ../../src/index.js` in each demo directory. `/scan` requires the LLM configuration described above.
+
+| Demo | Stack and coverage | Start website |
+| --- | --- | --- |
+| `demos/static` | Plain HTML pages and static assets | `cd demos/static && python3 -m http.server 8080` |
+| `demos/flask` | Flask templates plus a seeded SQLite `posts` database | `cd demos/flask && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python app.py` |
+| `demos/astro` | Astro pages for a Node-based static site | `cd demos/astro && npm install && npm run dev -- --host 127.0.0.1 --port 4322` |
+| `demos/hugo` | Hugo content pages and blog posts | `cd demos/hugo && hugo server -D --bind 127.0.0.1 --port 1314` |
+| `demos/wordpress` | PHP pages with WordPress-style MySQL configuration and posts | Start MySQL with `cd demos/wordpress && docker compose up -d mysql`, then run `php -S 127.0.0.1:8090` in `demos/wordpress` |
+
+The Flask demo creates and seeds `data/blog.db` when it starts. The WordPress-style demo loads `sql/init.sql` into MySQL and exposes database-backed posts at `/posts.php`; it is useful for validating database discovery and scanning. See the README in each demo directory for routes, local-MySQL setup, and framework-specific troubleshooting.
 
 ## Security Model
 
