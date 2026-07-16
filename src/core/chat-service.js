@@ -1,10 +1,15 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import crypto from "node:crypto";
 import { URL } from "node:url";
 import { approveReviewItem, listActions, listReviewQueue, queueActionReview, rejectReviewItem } from "./actions.js";
-import { notifyChannels } from "./channels.js";
-import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
+import { hasTelegramChannel, notifyChannels, sendTelegramMessage } from "./channels.js";
+import {
+  addTelegramReplyMapping,
+  startTelegramHandoffPolling,
+} from "./handoffs.js";
+import { chatCompletion, extractJsonObject } from "./llm.js";
 import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
 import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
@@ -27,17 +32,17 @@ function sendText(res, statusCode, text, contentType = "text/plain; charset=utf-
   res.end(text);
 }
 
-function openNdjsonStream(res) {
+function openSseStream(res) {
   res.writeHead(200, {
-    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
 }
 
-function writeNdjsonLine(res, payload) {
-  res.write(`${JSON.stringify(payload)}\n`);
+function writeSseEvent(res, eventName, payload) {
+  res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
 function parseBody(req) {
@@ -72,7 +77,14 @@ const DOC_SELECT_HISTORY_LIMIT = 20;
 const DOC_SELECT_HISTORY_ITEM_MAX_CHARS = 400;
 const DOC_SELECT_FREQUENT_SECTION_MAX_CHARS = 180000;
 const DOC_SELECT_DIRECT_ANSWER_MIN_CONFIDENCE = 0.85;
+const HANDOFF_TRANSCRIPT_LIMIT = 12;
+const HANDOFF_MESSAGE_MAX_CHARS = 800;
+const HANDOFF_TELEGRAM_TRANSCRIPT_MAX_CHARS = 3400;
+const OPEN_HANDOFF_STATUSES = new Set(["pending_send", "waiting_owner", "active"]);
+const RESERVED_CHAT_SESSION_IDS = new Set(["telegram"]);
+const SSE_HEARTBEAT_INTERVAL_MS = 20000;
 const chatWriteQueues = new Map();
+const chatProcessQueues = new Map();
 const MAX_LOG_FIELD_LENGTH = 260;
 
 function oneLine(value) {
@@ -135,16 +147,38 @@ function normalizeIdentityValue(value, maxLen = 96) {
 
 function resolveChatIdentity(input) {
   const source = input && typeof input === "object" ? input : {};
+  const sessionId = normalizeIdentityValue(source.session_id, 96);
   return {
-    session_id: normalizeIdentityValue(source.session_id, 96),
+    session_id: RESERVED_CHAT_SESSION_IDS.has(sessionId) ? "" : sessionId,
   };
 }
 
 function normalizeChatRole(role) {
-  if (role === "user" || role === "assistant" || role === "system") {
+  if (role === "user" || role === "assistant" || role === "handoff" || role === "support" || role === "system") {
     return role;
   }
   return "system";
+}
+
+function normalizeStoredHandoff(item) {
+  if (!item || typeof item !== "object" || String(item.channel || "") !== "telegram") {
+    return null;
+  }
+
+  const messageIds = Array.isArray(item.telegram_message_ids)
+    ? item.telegram_message_ids.map((value) => Number(value)).filter(Number.isFinite)
+    : [];
+  return {
+    status: String(item.status || ""),
+    channel: "telegram",
+    telegram_chat_id: String(item.telegram_chat_id || ""),
+    telegram_message_ids: messageIds,
+    requested_at: typeof item.requested_at === "string" ? item.requested_at : "",
+    updated_at: typeof item.updated_at === "string" ? item.updated_at : "",
+    activated_at: typeof item.activated_at === "string" ? item.activated_at : "",
+    closed_at: typeof item.closed_at === "string" ? item.closed_at : "",
+    error: typeof item.error === "string" ? item.error : "",
+  };
 }
 
 function normalizeChatContent(value) {
@@ -160,6 +194,41 @@ function normalizeChatContent(value) {
   return normalized;
 }
 
+function normalizeMessageId(value) {
+  const normalized = String(value || "").trim().slice(0, 128);
+  return normalized || "";
+}
+
+function normalizeClientMessageId(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 128);
+  return normalized;
+}
+
+function legacyMessageId(role, content, timestamp) {
+  const hash = crypto.createHash("sha256").update(`${role}\u0000${timestamp}\u0000${content}`).digest("hex");
+  return `legacy-${hash}`;
+}
+
+function createChatMessage(role, content, options = {}) {
+  const normalizedContent = normalizeChatContent(content);
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const timestamp = typeof options.ts === "string" && options.ts ? options.ts : new Date().toISOString();
+  return {
+    id: normalizeMessageId(options.id) || crypto.randomUUID(),
+    client_message_id: normalizeClientMessageId(options.client_message_id),
+    role: normalizeChatRole(role),
+    content: normalizedContent,
+    ts: timestamp,
+  };
+}
+
 function normalizeStoredMessage(item) {
   if (!item || typeof item !== "object") {
     return null;
@@ -168,10 +237,14 @@ function normalizeStoredMessage(item) {
   if (!content) {
     return null;
   }
+  const role = normalizeChatRole(item.role);
+  const timestamp = typeof item.ts === "string" && item.ts ? item.ts : new Date().toISOString();
   return {
-    role: normalizeChatRole(item.role),
+    id: normalizeMessageId(item.id) || legacyMessageId(role, content, timestamp),
+    client_message_id: normalizeClientMessageId(item.client_message_id),
+    role,
     content,
-    ts: typeof item.ts === "string" && item.ts ? item.ts : new Date().toISOString(),
+    ts: timestamp,
   };
 }
 
@@ -205,6 +278,20 @@ function enqueueSessionWrite(sessionId, task) {
   return current;
 }
 
+function enqueueSessionProcess(sessionId, task) {
+  const previous = chatProcessQueues.get(sessionId) || Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(task)
+    .finally(() => {
+      if (chatProcessQueues.get(sessionId) === current) {
+        chatProcessQueues.delete(sessionId);
+      }
+    });
+  chatProcessQueues.set(sessionId, current);
+  return current;
+}
+
 async function readChatSession(paths, sessionId) {
   if (!sessionId) {
     return null;
@@ -234,6 +321,7 @@ async function readChatSession(paths, sessionId) {
     session_id: normalizeIdentityValue(parsed.session_id, 96) || sessionId,
     created_at: typeof parsed.created_at === "string" && parsed.created_at ? parsed.created_at : "",
     updated_at: typeof parsed.updated_at === "string" && parsed.updated_at ? parsed.updated_at : "",
+    handoff: normalizeStoredHandoff(parsed.handoff),
     messages: messages.slice(-MAX_CHAT_MESSAGES_PER_SESSION),
   };
 }
@@ -257,11 +345,7 @@ async function appendChatMessages(paths, identity, entries, context = {}) {
           if (!content) {
             return null;
           }
-          return {
-            role: normalizeChatRole(entry.role),
-            content,
-            ts: new Date().toISOString(),
-          };
+          return createChatMessage(entry.role, content, entry);
         })
         .filter(Boolean)
     : [];
@@ -277,6 +361,7 @@ async function appendChatMessages(paths, identity, entries, context = {}) {
       session_id: sessionId,
       created_at: now,
       updated_at: now,
+      handoff: null,
       messages: [],
     };
 
@@ -298,7 +383,67 @@ async function appendChatMessages(paths, identity, entries, context = {}) {
       });
     }
     await fs.writeFile(targetPath, `${JSON.stringify(current, null, 2)}\n`, "utf8");
-    return current;
+    return {
+      session: current,
+      appended: normalizedEntries,
+    };
+  });
+}
+
+async function submitUserMessage(paths, identity, content, clientMessageId, context = {}) {
+  const sessionId = identity.session_id;
+  const normalizedClientMessageId = normalizeClientMessageId(clientMessageId);
+  if (!sessionId) {
+    return null;
+  }
+
+  return enqueueSessionWrite(sessionId, async () => {
+    const now = new Date().toISOString();
+    const existing = await readChatSession(paths, sessionId);
+    const current = existing || {
+      session_id: sessionId,
+      created_at: now,
+      updated_at: now,
+      handoff: null,
+      messages: [],
+    };
+    if (normalizedClientMessageId) {
+      const duplicate = current.messages.find(
+        (item) => item.role === "user" && item.client_message_id === normalizedClientMessageId,
+      );
+      if (duplicate) {
+        return {
+          session: current,
+          message: duplicate,
+          duplicate: true,
+        };
+      }
+    }
+
+    const message = createChatMessage("user", content, {
+      client_message_id: normalizedClientMessageId,
+      ts: now,
+    });
+    if (!message) {
+      return null;
+    }
+    current.updated_at = now;
+    current.messages = [...current.messages, message].slice(-MAX_CHAT_MESSAGES_PER_SESSION);
+    if (!existing) {
+      writeChatSessionLog("chat_session_started", context.req, identity, {
+        route: context.route || "-",
+        mode: context.mode || "-",
+        file: path.basename(sessionFilePath(paths, sessionId)),
+        first_user_len: message.content.length,
+        first_user_preview: message.content.slice(0, 120),
+      });
+    }
+    await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(current, null, 2)}\n`, "utf8");
+    return {
+      session: current,
+      message,
+      duplicate: false,
+    };
   });
 }
 
@@ -311,6 +456,257 @@ async function loadChatHistory(paths, sessionId, limit = DEFAULT_CHAT_HISTORY_LI
     return [];
   }
   return record.messages.slice(-limit);
+}
+
+function isOpenTelegramHandoff(handoff) {
+  return Boolean(handoff && handoff.channel === "telegram" && OPEN_HANDOFF_STATUSES.has(handoff.status));
+}
+
+async function readTelegramHandoff(paths, sessionId) {
+  const session = await readChatSession(paths, sessionId);
+  return session?.handoff?.channel === "telegram" ? session.handoff : null;
+}
+
+async function createTelegramHandoff(paths, sessionId) {
+  return enqueueSessionWrite(sessionId, async () => {
+    const session = await readChatSession(paths, sessionId);
+    if (!session) {
+      return null;
+    }
+    if (isOpenTelegramHandoff(session.handoff)) {
+      return session.handoff;
+    }
+
+    const requestedAt = new Date().toISOString();
+    session.handoff = {
+      status: "pending_send",
+      channel: "telegram",
+      telegram_chat_id: "",
+      telegram_message_ids: [],
+      requested_at: requestedAt,
+      updated_at: requestedAt,
+      activated_at: "",
+      closed_at: "",
+      error: "",
+    };
+    session.updated_at = requestedAt;
+    session.messages = [
+      ...session.messages,
+      { role: "handoff", content: "Manual support requested.", ts: requestedAt },
+    ].slice(-MAX_CHAT_MESSAGES_PER_SESSION);
+    await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(session, null, 2)}\n`, "utf8");
+    return session.handoff;
+  });
+}
+
+async function updateTelegramHandoff(paths, sessionId, patch, eventText = "") {
+  return enqueueSessionWrite(sessionId, async () => {
+    const session = await readChatSession(paths, sessionId);
+    if (!session?.handoff || session.handoff.channel !== "telegram") {
+      return null;
+    }
+
+    const updatedAt = new Date().toISOString();
+    session.handoff = normalizeStoredHandoff({
+      ...session.handoff,
+      ...patch,
+      channel: "telegram",
+      updated_at: updatedAt,
+    });
+    session.updated_at = updatedAt;
+    if (eventText) {
+      session.messages = [
+        ...session.messages,
+        { role: "handoff", content: eventText, ts: updatedAt },
+      ].slice(-MAX_CHAT_MESSAGES_PER_SESSION);
+    }
+    await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(session, null, 2)}\n`, "utf8");
+    return session.handoff;
+  });
+}
+
+async function addTelegramHandoffMessageId(paths, sessionId, messageId) {
+  if (!messageId) {
+    return null;
+  }
+
+  return enqueueSessionWrite(sessionId, async () => {
+    const session = await readChatSession(paths, sessionId);
+    if (!session?.handoff || session.handoff.channel !== "telegram") {
+      return null;
+    }
+
+    const messageIds = [...session.handoff.telegram_message_ids];
+    if (messageIds.includes(messageId)) {
+      return session.handoff;
+    }
+
+    const updatedAt = new Date().toISOString();
+    session.handoff = normalizeStoredHandoff({
+      ...session.handoff,
+      telegram_message_ids: [...messageIds, messageId],
+      updated_at: updatedAt,
+    });
+    session.updated_at = updatedAt;
+    await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(session, null, 2)}\n`, "utf8");
+    return session.handoff;
+  });
+}
+
+async function activateTelegramHandoff(paths, sessionId, chatId, replyToMessageId) {
+  const handoff = await readTelegramHandoff(paths, sessionId);
+  if (
+    !isOpenTelegramHandoff(handoff) ||
+    handoff.telegram_chat_id !== String(chatId) ||
+    !handoff.telegram_message_ids.includes(replyToMessageId)
+  ) {
+    return null;
+  }
+  if (handoff.status === "active") {
+    return handoff;
+  }
+
+  return updateTelegramHandoff(
+    paths,
+    sessionId,
+    {
+      status: "active",
+      activated_at: handoff.activated_at || new Date().toISOString(),
+    },
+    "Manual support started.",
+  );
+}
+
+async function closeTelegramHandoff(paths, sessionId) {
+  return updateTelegramHandoff(
+    paths,
+    sessionId,
+    {
+      status: "closed",
+      closed_at: new Date().toISOString(),
+    },
+    "Manual support ended.",
+  );
+}
+
+function renderHandoffTranscript(messages) {
+  const items = Array.isArray(messages) ? messages.slice(-HANDOFF_TRANSCRIPT_LIMIT) : [];
+  if (items.length === 0) {
+    return "(no messages)";
+  }
+
+  return items
+    .map((item) => {
+      const content = truncateText(normalizeChatContent(item?.content || ""), HANDOFF_MESSAGE_MAX_CHARS);
+      return content ? `${handoffRoleLabel(item?.role)}: ${content}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function notifyTelegramHandoff(cwd, config, paths, sessionId) {
+  if (!hasTelegramChannel(config)) {
+    return null;
+  }
+
+  const existing = await readTelegramHandoff(paths, sessionId);
+  if (isOpenTelegramHandoff(existing)) {
+    return existing;
+  }
+
+  const handoff = await createTelegramHandoff(paths, sessionId);
+  if (!handoff) {
+    return null;
+  }
+  const history = await loadChatHistory(paths, sessionId, HANDOFF_TRANSCRIPT_LIMIT);
+  const transcript = truncateText(renderHandoffTranscript(history), HANDOFF_TELEGRAM_TRANSCRIPT_MAX_CHARS);
+  const message = [
+    "OpenVila human support requested",
+    `Session: ${sessionId}`,
+    "Reply to this message to answer the visitor. Reply /close to end manual support.",
+    "",
+    "Recent conversation:",
+    transcript,
+  ].join("\n");
+
+  try {
+    const sent = await sendTelegramMessage(config, message);
+    if (!sent.message_id) {
+      throw new Error("Telegram did not return a message ID");
+    }
+    const notified = await updateTelegramHandoff(paths, sessionId, {
+      status: "waiting_owner",
+      telegram_chat_id: String(config.channels.telegram.chat_id),
+      telegram_message_ids: [sent.message_id],
+      error: "",
+    });
+    await addTelegramReplyMapping(cwd, config.channels.telegram.chat_id, sent.message_id, sessionId);
+    return notified;
+  } catch (error) {
+    await updateTelegramHandoff(paths, sessionId, {
+      status: "notify_failed",
+      error: error.message,
+    }, "Manual support notification failed.").catch(() => undefined);
+    writeGlobalLog(`[telegram] handoff notification failed\nsession_id: ${sanitizeLogField(sessionId)}\nerror: ${sanitizeLogField(error.message)}`);
+    return null;
+  }
+}
+
+async function forwardVisitorMessageToTelegram(cwd, config, sessionId, message) {
+  const handoff = await readTelegramHandoff(runtimePaths(cwd), sessionId);
+  const replyToMessageId = handoff?.telegram_message_ids?.[0];
+  if (!isOpenTelegramHandoff(handoff) || !replyToMessageId) {
+    return null;
+  }
+
+  try {
+    const sent = await sendTelegramMessage(config, `Visitor:\n${truncateText(message, 3600)}`, { replyToMessageId });
+    if (sent.message_id) {
+      const updated = await addTelegramHandoffMessageId(runtimePaths(cwd), sessionId, sent.message_id);
+      if (!updated) {
+        throw new Error("Telegram handoff is no longer available");
+      }
+      await addTelegramReplyMapping(cwd, config.channels.telegram.chat_id, sent.message_id, sessionId);
+    }
+    return { handoff, delivered: true };
+  } catch (error) {
+    writeGlobalLog(`[telegram] handoff visitor message failed\nsession_id: ${sanitizeLogField(sessionId)}\nerror: ${sanitizeLogField(error.message)}`);
+    return { handoff, delivered: false };
+  }
+}
+
+async function replyDuringHumanSupport(cwd, config, paths, identity, message, req, route) {
+  void paths;
+  void req;
+  void route;
+  const forwarded = await forwardVisitorMessageToTelegram(cwd, config, identity.session_id, message);
+  if (!forwarded) {
+    return null;
+  }
+
+  const answer = forwarded.delivered
+    ? "Your message has been forwarded to manual support. Please wait for a reply."
+    : "Manual support is temporarily unavailable. Please try again later.";
+  return answer;
+}
+
+async function requestHumanSupport(cwd, config, paths, identity, message, req, route) {
+  const handoff = await notifyTelegramHandoff(cwd, config, paths, identity.session_id);
+  const answer = handoff
+    ? "Your request has been forwarded to the owner. Please wait for manual support."
+    : "Manual support is temporarily unavailable. Please try again later.";
+
+  if (config.channels?.feishu?.webhook) {
+    await notifyChannels(
+      {
+        ...config,
+        channels: { telegram: null, feishu: config.channels.feishu },
+      },
+      `OpenVila human support requested\n- message: ${message.slice(0, 400)}`,
+    ).catch(() => undefined);
+  }
+
+  return { answer, handoff };
 }
 
 function parseActionRequest(message) {
@@ -339,6 +735,19 @@ function isHumanSupportRequest(message) {
   const lower = message.toLowerCase();
   const keywords = ["人工", "客服", "站长", "human", "operator", "support"];
   return keywords.some((word) => lower.includes(word));
+}
+
+function handoffRoleLabel(role) {
+  if (role === "user") {
+    return "Visitor";
+  }
+  if (role === "support") {
+    return "Owner";
+  }
+  if (role === "handoff") {
+    return "System";
+  }
+  return "Vila";
 }
 
 function getAuthToken(req) {
@@ -385,7 +794,12 @@ function renderDocSelectHistory(chatHistory, limit = DOC_SELECT_HISTORY_LIMIT) {
 
   return items
     .map((item) => {
-      const role = item?.role === "assistant" ? "assistant" : item?.role === "system" ? "system" : "user";
+      let role = "user";
+      if (item?.role === "handoff") {
+        role = "system";
+      } else if (["assistant", "support", "system"].includes(item?.role)) {
+        role = item.role;
+      }
       const content = normalizeChatContent(item?.content || "");
       if (!content) {
         return null;
@@ -458,6 +872,7 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
   };
 }
 
+// 核心逻辑！分两步调用LLM。
 async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
   const index = await loadKnowledgeIndex(cwd);
   const paths = runtimePaths(cwd);
@@ -469,7 +884,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
   const entries = Object.entries(map);
 
   //
-  // 1. 选择文档：基于用户问题和知识库索引，选择最相关的文档路径。
+  // 1. 选择文档：基于用户问题和知识库索引，选择最相关的文档路径；如果是打招呼等Small Talk或者能命中索引文档中的Frequent Customer Concerns部分，则直接返回，减少用户等待时间。
   // e.g,
   // - {"doc_paths":["docs/fs-pricing-html.md","docs/fs-faq-html.md","docs/fs-user-agreement-html.md"]}
   //
@@ -529,84 +944,158 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
   };
 }
 
-// 核心逻辑! 通过知识库索引选择相关文档，并基于索引和文档内容生成答案，同时支持流式返回增量结果和状态更新。
-async function answerFromKnowledgeStream(cwd, config, message, chatHistory = [], handlers = {}) {
-  const onDelta = typeof handlers.onDelta === "function" ? handlers.onDelta : () => undefined;
-  const onStatus = typeof handlers.onStatus === "function" ? handlers.onStatus : () => undefined;
-  const index = await loadKnowledgeIndex(cwd);
-  const paths = runtimePaths(cwd);
-  const indexMarkdown = (await readTextSafe(paths.knowledgeIndex)) || "";
-  if (indexMarkdown) {
-    index.index_markdown = indexMarkdown;
-  }
-  const map = index.index_map || {};
-  const entries = Object.entries(map);
-
-  onStatus("...");
-  const docSelection = await selectDocs(cwd, config, index, message, chatHistory);
-  if (docSelection.mode === "direct" && docSelection.direct_answer) {
-    onDelta(docSelection.direct_answer);
-    return {
-      ok: true,
-      answer: docSelection.direct_answer,
-      doc_paths: [],
-      answered_by: "doc_select",
-    };
-  }
-
-  if (entries.length === 0) {
-    return {
-      ok: false,
-      error: "Knowledge base is empty. Run /scan first.",
-    };
-  }
-
-  const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
-  const selectedDocs = await loadDocContents(cwd, docPaths);
-
-  const indexText = entries
-    .slice(0, 300)
-    .map(([source, item]) => `- ${item.doc_path}: ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
-    .join("\n");
-
-  const docsText = selectedDocs
-    .map((doc) => `\n### ${doc.doc_path}\n${doc.content}`)
-    .join("\n\n");
-
-  const messages = [
-    {
-      role: "system",
-      content:
-        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. Reply in the same language as user input.",
-    },
-    {
-      role: "user",
-      content: `User question:\n${message}\n\nKnowledge index:\n${indexText}\n\nSelected documents:\n${docsText}`,
-    },
-  ];
-
-  onStatus("......");
-  const completion = await chatCompletionStream(config, messages, {
-    temperature: 0.35,
-    maxTokens: 900,
-    trace: "chat:answer_stream",
-    onDelta,
-  });
-  if (!completion.ok) {
-    return { ok: false, error: completion.error };
-  }
-
-  return {
-    ok: true,
-    answer: completion.content,
-    doc_paths: docPaths,
-  };
-}
-
 export async function startChatService(cwd, config, options = {}) {
   await ensureRuntime(cwd);
   const paths = runtimePaths(cwd);
   const port = Number(options.port || config.run.port || 9394);
+  const chatEventSubscribers = new Map();
+
+  function removeChatEventSubscriber(sessionId, subscriber) {
+    const subscribers = chatEventSubscribers.get(sessionId);
+    if (!subscribers || !subscribers.delete(subscriber)) {
+      return;
+    }
+    clearInterval(subscriber.heartbeat);
+    if (subscribers.size === 0) {
+      chatEventSubscribers.delete(sessionId);
+    }
+  }
+
+  function addChatEventSubscriber(sessionId, req, res) {
+    const subscribers = chatEventSubscribers.get(sessionId) || new Set();
+    const subscriber = {
+      res,
+      heartbeat: setInterval(() => {
+        try {
+          if (res.writableEnded) {
+            removeChatEventSubscriber(sessionId, subscriber);
+            return;
+          }
+          res.write(": keep-alive\n\n");
+        } catch {
+          removeChatEventSubscriber(sessionId, subscriber);
+        }
+      }, SSE_HEARTBEAT_INTERVAL_MS),
+    };
+    subscribers.add(subscriber);
+    chatEventSubscribers.set(sessionId, subscribers);
+
+    const remove = () => removeChatEventSubscriber(sessionId, subscriber);
+    req.once("close", remove);
+    res.once("close", remove);
+    return subscriber;
+  }
+
+  function publishChatEvent(sessionId, eventName, payload) {
+    const subscribers = chatEventSubscribers.get(sessionId);
+    if (!subscribers) {
+      return;
+    }
+    for (const subscriber of subscribers) {
+      if (subscriber.res.writableEnded) {
+        removeChatEventSubscriber(sessionId, subscriber);
+        continue;
+      }
+      try {
+        writeSseEvent(subscriber.res, eventName, payload);
+      } catch {
+        removeChatEventSubscriber(sessionId, subscriber);
+      }
+    }
+  }
+
+  function closeChatEventSubscribers() {
+    for (const [sessionId, subscribers] of chatEventSubscribers) {
+      for (const subscriber of subscribers) {
+        clearInterval(subscriber.heartbeat);
+        subscriber.res.end();
+      }
+      chatEventSubscribers.delete(sessionId);
+    }
+  }
+
+  async function appendAndPublish(identity, entries, context = {}) {
+    const result = await appendChatMessages(paths, identity, entries, context);
+    for (const message of result?.appended || []) {
+      publishChatEvent(identity.session_id, "message", message);
+    }
+    return result;
+  }
+
+  async function appendAssistantReply(identity, content, context = {}) {
+    return appendAndPublish(identity, [{ role: "assistant", content }], context);
+  }
+
+  async function processSubmittedMessage(identity, userMessage, req, route) {
+    const message = userMessage.content;
+    const manualSupportAnswer = await replyDuringHumanSupport(cwd, config, paths, identity, message, req, route);
+    if (manualSupportAnswer) {
+      await appendAssistantReply(identity, manualSupportAnswer, { req, route, mode: "human_support" });
+      return;
+    }
+
+    const actionReq = parseActionRequest(message);
+    if (actionReq) {
+      const actions = await listActions(cwd);
+      if (!actions.includes(actionReq.actionName)) {
+        await appendAssistantReply(identity, `Action ${actionReq.actionName} does not exist.`, { req, route, mode: "action" });
+        return;
+      }
+
+      const queued = await queueActionReview(cwd, actionReq.actionName, actionReq.payload, {
+        source: "chat",
+        remote: req?.socket?.remoteAddress,
+      });
+      const notifyText = `OpenVila action pending approval\n- id: ${queued.id}\n- action: ${queued.action}`;
+      await notifyChannels(config, notifyText).catch(() => undefined);
+      const actionAnswerText = `Action request submitted for owner approval. request_id=${queued.id}`;
+      await appendAssistantReply(identity, actionAnswerText, { req, route, mode: "action" });
+      return;
+    }
+
+    if (isHumanSupportRequest(message)) {
+      const support = await requestHumanSupport(cwd, config, paths, identity, message, req, route);
+      await appendAssistantReply(identity, support.answer, { req, route, mode: "human_support" });
+      return;
+    }
+
+    const recentHistory = (await loadChatHistory(paths, identity.session_id, DOC_SELECT_HISTORY_LIMIT + 1))
+      .filter((item) => item.id !== userMessage.id)
+      .slice(-DOC_SELECT_HISTORY_LIMIT);
+    const answer = await answerFromKnowledge(cwd, config, message, recentHistory);
+    const answerText = answer.ok
+      ? answer.answer
+      : `Service temporarily unavailable: ${answer.error}`;
+    await appendAssistantReply(identity, answerText, { req, route, mode: "knowledge_answer" });
+  }
+
+  function queueSubmittedMessage(identity, message, clientMessageId, req, route) {
+    const task = enqueueSessionProcess(identity.session_id, async () => {
+      const submitted = await submitUserMessage(paths, identity, message, clientMessageId, {
+        req,
+        route,
+        mode: "chat",
+      });
+      if (!submitted || submitted.duplicate) {
+        return;
+      }
+
+      publishChatEvent(identity.session_id, "message", submitted.message);
+      try {
+        await processSubmittedMessage(identity, submitted.message, req, route);
+      } catch (error) {
+        writeGlobalLog(
+          `[chat] message processing failed\nsession_id: ${sanitizeLogField(identity.session_id)}\nerror: ${sanitizeLogField(error.message)}`,
+        );
+        await appendAssistantReply(identity, `Service temporarily unavailable: ${error.message}`, {
+          req,
+          route,
+          mode: "chat_error",
+        });
+      }
+    });
+    task.catch(() => undefined);
+  }
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -657,222 +1146,39 @@ export async function startChatService(cwd, config, options = {}) {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/chat/events") {
+        const identity = resolveChatIdentity({
+          session_id: url.searchParams.get("session_id") || "",
+        });
+        if (!identity.session_id) {
+          sendJson(res, 400, { error: "session_id is required" });
+          return;
+        }
+
+        openSseStream(res);
+        addChatEventSubscriber(identity.session_id, req, res);
+        writeSseEvent(res, "ready", { session_id: identity.session_id });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/chat") {
         const body = await parseBody(req);
         const message = String(body.message || "").trim();
         const identity = resolveChatIdentity(body);
 
-        if (!message) {
-          sendJson(res, 400, { error: "message is required" });
+        if (!message || !identity.session_id) {
+          sendJson(res, 400, { error: !message ? "message is required" : "session_id is required" });
           return;
         }
 
-        const actionReq = parseActionRequest(message);
-        if (actionReq) {
-          const actions = await listActions(cwd);
-          if (!actions.includes(actionReq.actionName)) {
-            sendJson(res, 404, {
-              error: `Action not found: ${actionReq.actionName}`,
-              answer: `Action ${actionReq.actionName} does not exist.`,
-            });
-            return;
-          }
-
-          const queued = await queueActionReview(cwd, actionReq.actionName, actionReq.payload, {
-            source: "chat",
-            remote: req.socket.remoteAddress,
-          });
-
-          const notifyText = `OpenVila action pending approval\n- id: ${queued.id}\n- action: ${queued.action}`;
-          await notifyChannels(config, notifyText).catch(() => undefined);
-          const actionAnswerText = `Action request submitted for owner approval. request_id=${queued.id}`;
-          await appendChatMessages(paths, identity, [
-            { role: "user", content: message },
-            { role: "assistant", content: actionAnswerText },
-          ], {
-            req,
-            route: "/chat",
-            mode: "action",
-          }).catch(() => undefined);
-
-          sendJson(res, 200, {
-            ok: true,
-            answer: actionAnswerText,
-            request_id: queued.id,
-            status: queued.status,
-            session_id: identity.session_id,
-          });
-          return;
-        }
-
-        if (isHumanSupportRequest(message)) {
-          const notifyText = `OpenVila human support requested\n- message: ${message.slice(0, 400)}`;
-          await notifyChannels(config, notifyText).catch(() => undefined);
-          const supportAnswerText = "Your request has been forwarded to the owner. Please wait for manual support.";
-          await appendChatMessages(paths, identity, [
-            { role: "user", content: message },
-            { role: "assistant", content: supportAnswerText },
-          ], {
-            req,
-            route: "/chat",
-            mode: "human_support",
-          }).catch(() => undefined);
-          sendJson(res, 200, {
-            ok: true,
-            answer: supportAnswerText,
-            session_id: identity.session_id,
-          });
-          return;
-        }
-
-        const recentHistory = await loadChatHistory(paths, identity.session_id, DOC_SELECT_HISTORY_LIMIT);
-        const answer = await answerFromKnowledge(cwd, config, message, recentHistory);
-        if (!answer.ok) {
-          sendJson(res, 500, {
-            ok: false,
-            error: answer.error,
-            answer: `Service temporarily unavailable: ${answer.error}`,
-          });
-          return;
-        }
-
-        await appendChatMessages(paths, identity, [
-          { role: "user", content: message },
-          { role: "assistant", content: answer.answer },
-        ], {
-          req,
-          route: "/chat",
-          mode: "knowledge_answer",
-        }).catch(() => undefined);
-
-        sendJson(res, 200, {
+        const clientMessageId = normalizeClientMessageId(body.client_message_id) || crypto.randomUUID();
+        queueSubmittedMessage(identity, message, clientMessageId, req, "/chat");
+        sendJson(res, 202, {
           ok: true,
-          answer: answer.answer,
-          doc_paths: answer.doc_paths,
+          accepted: true,
           session_id: identity.session_id,
+          client_message_id: clientMessageId,
         });
-        return;
-      }
-
-      // 核心逻辑! 聊天接口, 支持流式返回增量结果和状态更新，同时处理基于知识库的问答、动作请求和人工支持请求。
-      if (req.method === "POST" && url.pathname === "/chat/stream") {
-        const body = await parseBody(req);
-        const message = String(body.message || "").trim();
-        const identity = resolveChatIdentity(body);
-        if (!message) {
-          sendJson(res, 400, { error: "message is required" });
-          return;
-        }
-
-        openNdjsonStream(res);
-        writeNdjsonLine(res, {
-          type: "start",
-          session_id: identity.session_id,
-        });
-
-        const actionReq = parseActionRequest(message);
-        if (actionReq) {
-          const actions = await listActions(cwd);
-          if (!actions.includes(actionReq.actionName)) {
-            writeNdjsonLine(res, {
-              type: "error",
-              error: `Action not found: ${actionReq.actionName}`,
-            });
-            writeNdjsonLine(res, { type: "done", ok: false });
-            res.end();
-            return;
-          }
-
-          const queued = await queueActionReview(cwd, actionReq.actionName, actionReq.payload, {
-            source: "chat",
-            remote: req.socket.remoteAddress,
-          });
-
-          const notifyText = `OpenVila action pending approval\n- id: ${queued.id}\n- action: ${queued.action}`;
-          await notifyChannels(config, notifyText).catch(() => undefined);
-          const actionAnswerText = `Action request submitted for owner approval. request_id=${queued.id}`;
-          await appendChatMessages(paths, identity, [
-            { role: "user", content: message },
-            { role: "assistant", content: actionAnswerText },
-          ], {
-            req,
-            route: "/chat/stream",
-            mode: "action",
-          }).catch(() => undefined);
-
-          writeNdjsonLine(res, {
-            type: "delta",
-            text: actionAnswerText,
-          });
-          writeNdjsonLine(res, {
-            type: "done",
-            ok: true,
-            request_id: queued.id,
-            status: queued.status,
-            session_id: identity.session_id,
-          });
-          res.end();
-          return;
-        }
-
-        if (isHumanSupportRequest(message)) {
-          const notifyText = `OpenVila human support requested\n- message: ${message.slice(0, 400)}`;
-          await notifyChannels(config, notifyText).catch(() => undefined);
-          const supportAnswerText = "Your request has been forwarded to the owner. Please wait for manual support.";
-          await appendChatMessages(paths, identity, [
-            { role: "user", content: message },
-            { role: "assistant", content: supportAnswerText },
-          ], {
-            req,
-            route: "/chat/stream",
-            mode: "human_support",
-          }).catch(() => undefined);
-          writeNdjsonLine(res, {
-            type: "delta",
-            text: supportAnswerText,
-          });
-          writeNdjsonLine(res, {
-            type: "done",
-            ok: true,
-            session_id: identity.session_id,
-          });
-          res.end();
-          return;
-        }
-
-        const recentHistory = await loadChatHistory(paths, identity.session_id, DOC_SELECT_HISTORY_LIMIT);
-        const answer = await answerFromKnowledgeStream(cwd, config, message, recentHistory, {
-          onStatus: (text) => writeNdjsonLine(res, { type: "status", text }),
-          onDelta: (text) => writeNdjsonLine(res, { type: "delta", text }),
-        });
-        if (!answer.ok) {
-          writeNdjsonLine(res, {
-            type: "error",
-            error: answer.error,
-            text: `Service temporarily unavailable: ${answer.error}`,
-          });
-          writeNdjsonLine(res, { type: "done", ok: false });
-          res.end();
-          return;
-        }
-
-        await appendChatMessages(paths, identity, [
-          { role: "user", content: message },
-          { role: "assistant", content: answer.answer },
-        ], {
-          req,
-          route: "/chat/stream",
-          mode: "knowledge_answer",
-        }).catch(() => undefined);
-
-        writeNdjsonLine(res, {
-          type: "done",
-          ok: true,
-          answer: answer.answer,
-          doc_paths: answer.doc_paths,
-          session_id: identity.session_id,
-        });
-        res.end();
         return;
       }
 
@@ -930,11 +1236,9 @@ export async function startChatService(cwd, config, options = {}) {
     } catch (error) {
       if (res.headersSent) {
         try {
-          writeNdjsonLine(res, { type: "error", error: error.message });
-          writeNdjsonLine(res, { type: "done", ok: false });
           res.end();
         } catch {
-          // ignore stream write errors on broken connection
+          // Ignore response-close errors on broken connections.
         }
         return;
       }
@@ -947,12 +1251,57 @@ export async function startChatService(cwd, config, options = {}) {
     server.listen(port, "0.0.0.0", resolve);
   });
 
+  const telegramPolling = startTelegramHandoffPolling(cwd, config, {
+    onReply: async (sessionId, chatId, replyToMessageId, text) => {
+      const handoff = await activateTelegramHandoff(paths, sessionId, chatId, replyToMessageId);
+      if (!handoff) {
+        return;
+      }
+      const identity = { session_id: sessionId };
+      const appended = await appendChatMessages(paths, identity, [{ role: "support", content: text }], {
+        route: "telegram",
+        mode: "human_support",
+      });
+      const message = appended?.appended?.[0];
+      if (message?.role === "support") {
+        publishChatEvent(sessionId, "message", message);
+      }
+      writeGlobalLog(`[telegram] handoff reply\nsession_id: ${sanitizeLogField(sessionId)}\nmessage_length: ${text.length}`);
+    },
+    onClose: async (sessionId, chatId, replyToMessageId) => {
+      const handoff = await activateTelegramHandoff(paths, sessionId, chatId, replyToMessageId);
+      if (!handoff) {
+        return;
+      }
+      const closed = await closeTelegramHandoff(paths, sessionId);
+      if (!closed) {
+        return;
+      }
+      const identity = { session_id: sessionId };
+      const appended = await appendChatMessages(paths, identity, [
+        { role: "support", content: "Manual support has ended. You can continue chatting with Vila." },
+      ], {
+        route: "telegram",
+        mode: "human_support_closed",
+      });
+      const message = appended?.appended?.[0];
+      if (message?.role === "support") {
+        publishChatEvent(sessionId, "message", message);
+      }
+      writeGlobalLog(`[telegram] handoff closed\nsession_id: ${sanitizeLogField(sessionId)}`);
+    },
+  });
+
   return {
     port,
     owner_token: config.run.owner_token,
-    close: () =>
-      new Promise((resolve, reject) => {
+    telegram_polling: telegramPolling.enabled,
+    close: async () => {
+      await telegramPolling.close();
+      closeChatEventSubscribers();
+      await new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
-      }),
+      });
+    },
   };
 }

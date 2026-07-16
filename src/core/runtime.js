@@ -36,6 +36,7 @@ export function runtimePaths(cwd) {
     vilas: path.join(base, "vilas"),
     logs: path.join(base, "logs"),
     chats: path.join(base, "chats"),
+    telegramState: path.join(base, "chats", "telegram.json"),
     widget: path.join(base, "widget.html"),
     widgetScript: path.join(base, "widget.js"),
     reviewQueue: path.join(base, "logs", "review-queue.json"),
@@ -151,6 +152,10 @@ async function ensureRuntimeDirectories(paths) {
 async function ensureRuntimeFiles(cwd, paths, options = {}) {
   if (!(await exists(paths.reviewQueue))) {
     await fs.writeFile(paths.reviewQueue, "[]\n", "utf8");
+  }
+
+  if (!(await exists(paths.telegramState))) {
+    await fs.writeFile(paths.telegramState, '{\n  "last_update_id": 0\n}\n', "utf8");
   }
 
   if (!(await exists(paths.runtimeGitignore))) {

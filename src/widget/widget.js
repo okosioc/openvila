@@ -56,6 +56,10 @@
   var apiBase = buildApiBase(widgetConfig);
   var SESSION_ID_KEY = "openvila_session_id";
   var CHAT_HISTORY_LIMIT = 200;
+  var CHAT_HISTORY_REFRESH_MS = 3000;
+  var renderedMessageIds = Object.create(null);
+  var renderedClientMessageIds = Object.create(null);
+  var chatEvents = null;
 
   function generateId(prefix) {
     var value = "";
@@ -98,6 +102,8 @@
   function roleLabel(role) {
     if (role === "user") return "You";
     if (role === "assistant") return "Vila";
+    if (role === "handoff") return "System";
+    if (role === "support") return "Support";
     return "System";
   }
 
@@ -195,17 +201,59 @@
     return Array.isArray(payload.messages) ? payload.messages : [];
   }
 
-  async function requestChatStream(message, identity, handlers) {
-    var onStatus = handlers && typeof handlers.onStatus === "function" ? handlers.onStatus : function () {};
-    var onDelta = handlers && typeof handlers.onDelta === "function" ? handlers.onDelta : function () {};
-    var onDone = handlers && typeof handlers.onDone === "function" ? handlers.onDone : function () {};
+  function appendChatMessage(item) {
+    if (!item || typeof item !== "object") return;
+    var content = String(item.content || "").trim();
+    var messageId = String(item.id || "").trim();
+    var clientMessageId = String(item.client_message_id || "").trim();
+    if (!content || (messageId && renderedMessageIds[messageId]) || (clientMessageId && renderedClientMessageIds[clientMessageId])) {
+      if (messageId) renderedMessageIds[messageId] = true;
+      return;
+    }
+    if (messageId) renderedMessageIds[messageId] = true;
+    if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
+    append(roleLabel(item.role), content);
+  }
 
-    var res = await fetch(apiBase + "/chat/stream", {
+  function openChatEvents() {
+    if (!window.EventSource || chatEvents) return;
+
+    var query = new URLSearchParams({ session_id: chatIdentity.sessionId });
+    var source = new window.EventSource(apiBase + "/chat/events?" + query.toString());
+    chatEvents = source;
+    source.addEventListener("open", function () {
+      refreshChatHistory();
+    });
+    source.addEventListener("message", function (event) {
+      try {
+        appendChatMessage(JSON.parse(String(event.data || "{}")));
+      } catch (error) {}
+    });
+    source.addEventListener("error", function () {
+      if (source.readyState === window.EventSource.CLOSED && chatEvents === source) {
+        chatEvents = null;
+      }
+    });
+  }
+
+  function closeChatEvents() {
+    if (!chatEvents) return;
+    chatEvents.close();
+    chatEvents = null;
+  }
+
+  function isChatEventsOpen() {
+    return Boolean(chatEvents && chatEvents.readyState === window.EventSource.OPEN);
+  }
+
+  async function submitChatMessage(message, identity, clientMessageId) {
+    var res = await fetch(apiBase + "/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: message,
-        session_id: identity.sessionId
+        session_id: identity.sessionId,
+        client_message_id: clientMessageId
       })
     });
 
@@ -215,63 +263,16 @@
       });
       throw new Error(String(errorPayload.error || ("HTTP " + res.status)));
     }
-
-    if (!res.body || typeof res.body.getReader !== "function") {
-      throw new Error("stream response not supported");
-    }
-
-    var reader = res.body.getReader();
-    var decoder = new TextDecoder();
-    var buffer = "";
-
-    function handleLine(line) {
-      var trimmed = String(line || "").trim();
-      if (!trimmed) return;
-      var packet = null;
-      try {
-        packet = JSON.parse(trimmed);
-      } catch (error) {
-        return;
-      }
-      if (!packet || typeof packet !== "object") return;
-
-      if (packet.type === "status") {
-        onStatus(String(packet.text || ""));
-        return;
-      }
-      if (packet.type === "delta") {
-        onDelta(String(packet.text || ""));
-        return;
-      }
-      if (packet.type === "error") {
-        throw new Error(String(packet.error || packet.text || "stream error"));
-      }
-      if (packet.type === "done") {
-        onDone(packet);
-      }
-    }
-
-    while (true) {
-      var chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      var lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || "";
-      for (var i = 0; i < lines.length; i += 1) {
-        handleLine(lines[i]);
-      }
-    }
-
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      handleLine(buffer);
-    }
   }
 
   button.addEventListener("click", function () {
     panel.style.display = panel.style.display === "none" ? "block" : "none";
     if (panel.style.display === "block") {
       scrollMessagesToBottom();
+      openChatEvents();
+      refreshChatHistory();
+    } else {
+      closeChatEvents();
     }
   });
 
@@ -283,63 +284,32 @@
     var text = (input.value || "").trim();
     if (!text) return;
     input.value = "";
-    append("You", text);
-    var vilaMessage = append("Vila", "...");
+    var clientMessageId = generateId("message");
+    appendChatMessage({
+      id: "local-" + clientMessageId,
+      client_message_id: clientMessageId,
+      role: "user",
+      content: text
+    });
 
     try {
-      var streamingText = "";
-      var gotDelta = false;
-
-      await requestChatStream(text, chatIdentity, {
-        onStatus: function (statusText) {
-          if (!gotDelta && vilaMessage) {
-            vilaMessage.setText(statusText || "...");
-          }
-        },
-        onDelta: function (deltaText) {
-          if (!deltaText) return;
-          gotDelta = true;
-          streamingText += deltaText;
-          if (vilaMessage) {
-            vilaMessage.setText(streamingText);
-          }
-        },
-        onDone: function (packet) {
-          if (!gotDelta && vilaMessage) {
-            if (packet && typeof packet.answer === "string" && packet.answer) {
-              vilaMessage.setText(packet.answer);
-            } else {
-              vilaMessage.setText("No response");
-            }
-          }
-        }
-      });
+      await submitChatMessage(text, chatIdentity, clientMessageId);
     } catch (err) {
-      try {
-        var fallbackRes = await fetch(apiBase + "/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            session_id: chatIdentity.sessionId
-          })
-        });
-        var fallbackData = await fallbackRes.json().catch(function () {
-          return {};
-        });
-        if (vilaMessage) {
-          vilaMessage.setText(fallbackData.answer || fallbackData.error || ("Request failed: " + err.message));
-        }
-      } catch (fallbackErr) {
-        if (vilaMessage) {
-          vilaMessage.setText("Request failed: " + fallbackErr.message);
-        }
-      }
+      append("System", "Request failed: " + err.message);
     }
   });
 
   document.body.appendChild(panel);
   document.body.appendChild(button);
+
+  async function refreshChatHistory() {
+    try {
+      var messages = await requestChatHistory(chatIdentity);
+      for (var i = 0; i < messages.length; i += 1) {
+        appendChatMessage(messages[i]);
+      }
+    } catch (error) {}
+  }
 
   (async function restoreChatHistory() {
     try {
@@ -352,11 +322,18 @@
         if (!item || typeof item !== "object") continue;
         var content = String(item.content || "").trim();
         if (!content) continue;
-        append(roleLabel(String(item.role || "")), content);
+        appendChatMessage(item);
       }
       scrollMessagesToBottom();
     } catch (error) {
       // ignore history restore failures
     }
   })();
+
+  setInterval(function () {
+    if (panel.style.display === "block" && !isChatEventsOpen()) {
+      openChatEvents();
+      refreshChatHistory();
+    }
+  }, CHAT_HISTORY_REFRESH_MS);
 })();
