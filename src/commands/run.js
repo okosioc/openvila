@@ -1,14 +1,17 @@
 import { startChatService } from "../core/chat-service.js";
+import { ensureWidgetPreview } from "../core/install.js";
 import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
 export async function runRun(ctx, argv, dependencies = {}) {
   const loadRuntimeConfig = dependencies.loadConfig || loadConfig;
   const startService = dependencies.startChatService || startChatService;
+  const ensurePreview = dependencies.ensureWidgetPreview || ensureWidgetPreview;
   const runtimeProcess = dependencies.process || process;
   const config = await loadRuntimeConfig(ctx.cwd);
   const port = Number(argv.options.port || config.run.port || 9394);
 
+  await ensurePreview(ctx.cwd);
   const service = await startService(ctx.cwd, config, { port });
 
   ctx.log(
@@ -17,6 +20,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
       [
         `OpenVila 聊天服务已启动: http://127.0.0.1:${service.port}`,
         `健康检查: http://127.0.0.1:${service.port}/health`,
+        `Widget 预览: http://127.0.0.1:${service.port}/widget`,
         `聊天接口: POST http://127.0.0.1:${service.port}/chat`,
         `Telegram 人工接管轮询: ${service.telegram_polling ? "已启用" : "未启用"}`,
         `站长审核 token: ${service.owner_token}`,
@@ -26,6 +30,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
       [
         `OpenVila chat service started: http://127.0.0.1:${service.port}`,
         `Health: http://127.0.0.1:${service.port}/health`,
+        `Widget preview: http://127.0.0.1:${service.port}/widget`,
         `Chat API: POST http://127.0.0.1:${service.port}/chat`,
         `Telegram handoff polling: ${service.telegram_polling ? "enabled" : "disabled"}`,
         `Owner token: ${service.owner_token}`,

@@ -5,6 +5,30 @@ import { readTextSafe, writeText } from "../utils/fs.js";
 
 const telegramStateWriteQueues = new Map();
 
+function sanitizeLogValue(value, maxLength = 120) {
+  const normalized = String(value ?? "")
+    .replace(/\r\n/g, " ")
+    .replace(/\r/g, " ")
+    .replace(/\n/g, " ")
+    .trim();
+  if (!normalized) {
+    return "-";
+  }
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function writeTelegramLog(eventName, fields = {}, replyText = null) {
+  const lines = [`[telegram] ${sanitizeLogValue(eventName, 64)}`];
+  for (const [key, value] of Object.entries(fields)) {
+    lines.push(`${sanitizeLogValue(key, 64)}: ${sanitizeLogValue(value)}`);
+  }
+  if (typeof replyText === "string") {
+    lines.push("reply_text:");
+    lines.push(replyText.replace(/\r\n/g, "\n").replace(/\r/g, "\n") || "(empty)");
+  }
+  writeGlobalLog(lines.join("\n"));
+}
+
 function telegramReplyMapKey(chatId, messageId) {
   return `${String(chatId)}:${String(messageId)}`;
 }
@@ -99,6 +123,7 @@ export function startTelegramHandoffPolling(cwd, config, handlers = {}) {
   const task = (async () => {
     const initialState = await loadTelegramState(cwd);
     let lastUpdateId = initialState.last_update_id;
+    writeTelegramLog("handoff polling started", { last_update_id: lastUpdateId });
     while (!stopped) {
       controller = new AbortController();
       try {
@@ -115,15 +140,26 @@ export function startTelegramHandoffPolling(cwd, config, handlers = {}) {
           const message = update?.message;
           const chatId = message?.chat?.id;
           const replyToMessageId = message?.reply_to_message?.message_id;
-          const text = String(message?.text || "").trim();
-          if (String(chatId) === String(config.channels.telegram.chat_id) && replyToMessageId && text) {
-            const sessionId = await findTelegramReplySession(cwd, chatId, replyToMessageId);
-            if (sessionId) {
-              if (text === "/close") {
-                await onClose(sessionId, chatId, replyToMessageId, message);
-              } else {
-                await onReply(sessionId, chatId, replyToMessageId, text, message);
-              }
+          const replyText = String(message?.text || "");
+          const text = replyText.trim();
+          const belongsToOwnerChat = String(chatId) === String(config.channels.telegram.chat_id);
+          let sessionId = "";
+          if (belongsToOwnerChat && replyToMessageId && text) {
+            sessionId = await findTelegramReplySession(cwd, chatId, replyToMessageId);
+          }
+          writeTelegramLog("polling input", {
+            update_id: updateId,
+            owner_chat: belongsToOwnerChat,
+            reply_to_message_id: replyToMessageId || "-",
+            message_length: replyText.length,
+            command: text === "/close" ? "/close" : "reply",
+            mapped_session: sessionId || "-",
+          }, replyText);
+          if (sessionId) {
+            if (text === "/close") {
+              await onClose(sessionId, chatId, replyToMessageId, message);
+            } else {
+              await onReply(sessionId, chatId, replyToMessageId, text, message);
             }
           }
 
@@ -150,6 +186,7 @@ export function startTelegramHandoffPolling(cwd, config, handlers = {}) {
       stopped = true;
       controller?.abort();
       await task.catch(() => undefined);
+      writeTelegramLog("handoff polling stopped");
     },
   };
 }

@@ -59,7 +59,10 @@
   var CHAT_HISTORY_REFRESH_MS = 3000;
   var renderedMessageIds = Object.create(null);
   var renderedClientMessageIds = Object.create(null);
+  var streamingMessageViews = Object.create(null);
   var chatEvents = null;
+  var waitingForReply = false;
+  var replyWaitStartedAt = 0;
 
   function generateId(prefix) {
     var value = "";
@@ -135,7 +138,7 @@
     '<div id="openvila-messages" style="height:400px;overflow:auto;padding:12px;font:14px/1.5 sans-serif;background:#ffffff"></div>' +
     '<form id="openvila-form" style="display:flex;gap:8px;padding:10px;border-top:1px solid #e2e8f0;background:#f8fafc">' +
     '<input id="openvila-input" placeholder="Ask anything..." style="flex:1;padding:8px;border:1px solid #cbd5e1;border-radius:8px" />' +
-    '<button style="padding:8px 12px;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer">Send</button>' +
+    '<button id="openvila-submit" style="padding:8px 12px;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer">Send</button>' +
     "</form>";
 
   var button = document.createElement("button");
@@ -184,6 +187,23 @@
     };
   }
 
+  function setWaitingForReply(waiting) {
+    waitingForReply = waiting;
+    replyWaitStartedAt = waiting ? Date.now() : 0;
+    var input = panel.querySelector("#openvila-input");
+    var submit = panel.querySelector("#openvila-submit");
+    if (input) {
+      input.disabled = waiting;
+      input.placeholder = waiting ? "Waiting for reply..." : "Ask anything...";
+    }
+    if (submit) {
+      submit.disabled = waiting;
+      submit.textContent = waiting ? "Waiting..." : "Send";
+      submit.style.cursor = waiting ? "not-allowed" : "pointer";
+      submit.style.opacity = waiting ? "0.65" : "1";
+    }
+  }
+
   async function requestChatHistory(identity) {
     var query = new URLSearchParams({
       session_id: identity.sessionId,
@@ -206,6 +226,16 @@
     var content = String(item.content || "").trim();
     var messageId = String(item.id || "").trim();
     var clientMessageId = String(item.client_message_id || "").trim();
+    var role = String(item.role || "").trim();
+    var streamed = messageId ? streamingMessageViews[messageId] : null;
+    if (streamed) {
+      streamed.setText(content);
+      delete streamingMessageViews[messageId];
+      if (messageId) renderedMessageIds[messageId] = true;
+      if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
+      completeReplyWait(item, role);
+      return;
+    }
     if (!content || (messageId && renderedMessageIds[messageId]) || (clientMessageId && renderedClientMessageIds[clientMessageId])) {
       if (messageId) renderedMessageIds[messageId] = true;
       return;
@@ -213,6 +243,40 @@
     if (messageId) renderedMessageIds[messageId] = true;
     if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
     append(roleLabel(item.role), content);
+
+    completeReplyWait(item, role);
+  }
+
+  function completeReplyWait(item, role) {
+    var replyTime = Date.parse(String(item.ts || ""));
+    if (
+      waitingForReply &&
+      (role === "assistant" || role === "support") &&
+      Number.isFinite(replyTime) &&
+      replyTime >= replyWaitStartedAt
+    ) {
+      setWaitingForReply(false);
+    }
+  }
+
+  function appendChatDelta(item) {
+    if (!item || typeof item !== "object") return;
+    var messageId = String(item.id || "").trim();
+    var delta = String(item.delta || "");
+    if (!messageId || !delta) return;
+
+    var streamed = streamingMessageViews[messageId];
+    if (!streamed) {
+      var view = append(roleLabel(item.role || "assistant"), "");
+      if (!view) return;
+      streamed = {
+        content: "",
+        setText: view.setText,
+      };
+      streamingMessageViews[messageId] = streamed;
+    }
+    streamed.content += delta;
+    streamed.setText(streamed.content);
   }
 
   function openChatEvents() {
@@ -227,6 +291,11 @@
     source.addEventListener("message", function (event) {
       try {
         appendChatMessage(JSON.parse(String(event.data || "{}")));
+      } catch (error) {}
+    });
+    source.addEventListener("delta", function (event) {
+      try {
+        appendChatDelta(JSON.parse(String(event.data || "{}")));
       } catch (error) {}
     });
     source.addEventListener("error", function () {
@@ -280,9 +349,11 @@
 
   panel.querySelector("#openvila-form").addEventListener("submit", async function (e) {
     e.preventDefault();
+    if (waitingForReply) return;
     var input = panel.querySelector("#openvila-input");
     var text = (input.value || "").trim();
     if (!text) return;
+    setWaitingForReply(true);
     input.value = "";
     var clientMessageId = generateId("message");
     appendChatMessage({
@@ -295,6 +366,7 @@
     try {
       await submitChatMessage(text, chatIdentity, clientMessageId);
     } catch (err) {
+      setWaitingForReply(false);
       append("System", "Request failed: " + err.message);
     }
   });

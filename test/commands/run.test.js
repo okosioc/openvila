@@ -44,6 +44,7 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
   const context = createContext();
   const runtimeProcess = createRuntimeProcess();
   const startCalls = [];
+  const previewCalls = [];
   let closeCalls = 0;
 
   const runPromise = runRun(
@@ -51,6 +52,9 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
     { options: {} },
     {
       loadConfig: async () => ({ run: { port: 9460 } }),
+      ensureWidgetPreview: async (cwd) => {
+        previewCalls.push(cwd);
+      },
       startChatService: async (cwd, config, options) => {
         startCalls.push({ cwd, config, options });
         return {
@@ -77,7 +81,9 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
       options: { port: 9460 },
     },
   ]);
+  assert.deepEqual(previewCalls, ["/tmp/openvila-run-test"]);
   assert.equal(closeCalls, 1);
+  assert.ok(context.logs.some((line) => line.includes("Widget preview: http://127.0.0.1:9460/widget")));
   assert.ok(context.logs.some((line) => line.includes("http://127.0.0.1:9460")));
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: disabled")));
 });
@@ -86,12 +92,16 @@ test("runRun lets the command port override the runtime configuration", async ()
   const context = createContext();
   const runtimeProcess = createRuntimeProcess();
   let selectedPort = null;
+  let previewCwd = "";
 
   const runPromise = runRun(
     context,
     { options: { port: "9510" } },
     {
       loadConfig: async () => ({ run: { port: 9460 } }),
+      ensureWidgetPreview: async (cwd) => {
+        previewCwd = cwd;
+      },
       startChatService: async (cwd, config, options) => {
         selectedPort = options.port;
         return {
@@ -110,5 +120,6 @@ test("runRun lets the command port override the runtime configuration", async ()
   await runPromise;
 
   assert.equal(selectedPort, 9510);
+  assert.equal(previewCwd, "/tmp/openvila-run-test");
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: enabled")));
 });

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { startChatService } from "../../src/core/chat-service.js";
+import { createRuntimeFileLogger, setGlobalLogWriter } from "../../src/core/logging.js";
 import { defaultConfig, initializeRuntime, runtimePaths } from "../../src/core/runtime.js";
 
 function delay(milliseconds) {
@@ -60,6 +61,91 @@ async function readRequestBody(request) {
 function sendJson(response, payload) {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify(payload));
+}
+
+async function createStreamingLlm() {
+  const requests = [];
+  const server = http.createServer(async (request, response) => {
+    const body = await readRequestBody(request);
+    requests.push(body);
+
+    if (body.stream) {
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n');
+      await delay(10);
+      response.write('data: {"choices":[{"delta":{"content":" from Vila"}}]}\n\n');
+      response.end("data: [DONE]\n\n");
+      return;
+    }
+
+    sendJson(response, {
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ can_answer_directly: false, confidence: 0, direct_answer: "", doc_paths: ["docs/faq.md"] }),
+          },
+        },
+      ],
+    });
+  });
+  const port = await listen(server);
+
+  return {
+    endpoint: `http://127.0.0.1:${port}`,
+    requests,
+    close: () => closeServer(server),
+  };
+}
+
+async function openChatEvents(baseUrl, sessionId) {
+  const controller = new AbortController();
+  const response = await fetch(`${baseUrl}/chat/events?session_id=${sessionId}`, {
+    headers: { Connection: "close" },
+    signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+
+  const events = [];
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let eventName = "message";
+  let dataLines = [];
+  let buffer = "";
+  const reading = (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        return;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line) {
+          if (dataLines.length > 0) {
+            events.push({ event: eventName, data: JSON.parse(dataLines.join("\n")) });
+          }
+          eventName = "message";
+          dataLines = [];
+          continue;
+        }
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trim());
+        }
+      }
+    }
+  })();
+
+  return {
+    events,
+    waitForEvent: (predicate, description) => waitFor(() => events.find(predicate), description),
+    async close() {
+      controller.abort();
+      await reading.catch(() => undefined);
+    },
+  };
 }
 
 async function createTelegramApi() {
@@ -121,6 +207,29 @@ async function createChatService(options = {}) {
   config.run.port = await availablePort();
   config.run.owner_token = "owner-test-token";
   config.channels.telegram = options.telegram || null;
+  if (options.llm) {
+    config.llm.endpoint = options.llm.endpoint;
+    config.llm.api_key = "test-key";
+    config.llm.model = "test-model";
+  }
+
+  if (options.knowledge) {
+    const paths = runtimePaths(cwd);
+    await fs.writeFile(
+      paths.knowledgeManifest,
+      `${JSON.stringify({
+        index_map: {
+          "faq.html": {
+            doc_path: "docs/faq.md",
+            tags: ["faq"],
+            summary: "Frequently asked question",
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(paths.knowledgeDocs, "faq.md"), "# FAQ\n\nHelpful answer.\n", "utf8");
+  }
 
   const service = await startChatService(cwd, config, { port: config.run.port });
   const baseUrl = `http://127.0.0.1:${service.port}`;
@@ -199,6 +308,44 @@ test("chat accepts a visitor message and keeps duplicate client messages out of 
   }
 });
 
+test("chat streams LLM answer chunks before persisting the completed reply", async () => {
+  const llm = await createStreamingLlm();
+  const chat = await createChatService({ llm, knowledge: true });
+  const events = await openChatEvents(chat.baseUrl, "visitor-stream");
+
+  try {
+    const response = await requestJson(chat.baseUrl, "/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "visitor-stream",
+        client_message_id: "stream-request",
+        message: "What does the FAQ say?",
+      }),
+    });
+    assert.equal(response.status, 202);
+
+    const firstDelta = await events.waitForEvent((event) => event.event === "delta", "first streamed answer chunk");
+    const finalMessage = await events.waitForEvent(
+      (event) => event.event === "message" && event.data.role === "assistant" && event.data.content === "Hello from Vila",
+      "completed streamed answer",
+    );
+
+    const deltas = events.events.filter((event) => event.event === "delta");
+    assert.equal(firstDelta.data.id, finalMessage.data.id);
+    assert.equal(deltas.map((event) => event.data.delta).join(""), "Hello from Vila");
+    assert.equal(llm.requests.length, 2);
+    assert.equal(llm.requests[1].stream, true);
+
+    const session = await readSession(chat.cwd, "visitor-stream");
+    assert.equal(session.messages.at(-1).content, "Hello from Vila");
+    assert.equal(session.messages.at(-1).id, finalMessage.data.id);
+  } finally {
+    await events.close();
+    await chat.close();
+    await llm.close();
+  }
+});
+
 test("Telegram handoff routes owner replies, visitor follow-ups, and close events", async () => {
   const telegram = await createTelegramApi();
   const chat = await createChatService({
@@ -208,6 +355,8 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
       endpoint: telegram.endpoint,
     },
   });
+  const logger = await createRuntimeFileLogger(chat.cwd);
+  setGlobalLogWriter((text) => logger.append(text));
 
   try {
     await telegram.waitForPoll();
@@ -278,7 +427,18 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
       return session?.handoff?.status === "closed" ? session : null;
     }, "manual support close");
     assert.ok(closedSession.messages.some((message) => message.content.includes("Manual support has ended")));
+
+    await logger.flush();
+    const logText = await fs.readFile(logger.logFilePath, "utf8");
+    assert.match(logText, /\[chat\] human support requested/);
+    assert.match(logText, /\[telegram\] handoff notification sent/);
+    assert.match(logText, /\[telegram\] polling input/);
+    assert.match(logText, /mapped_session: visitor-2/);
+    assert.match(logText, /reply_text:\nI can help with that\./);
+    assert.match(logText, /visitor_message:\nPlease connect me to a human operator/);
+    assert.match(logText, /visitor_message:\nMy order number is 42\./);
   } finally {
+    setGlobalLogWriter(null);
     await chat.close();
     await telegram.close();
   }

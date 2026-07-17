@@ -14,6 +14,16 @@ async function copyWidgetAssets(paths) {
   await fs.copyFile(WIDGET_SCRIPT_ASSET, paths.widgetScript);
 }
 
+export async function ensureWidgetPreview(cwd) {
+  const paths = await ensureRuntime(cwd);
+  await copyWidgetAssets(paths);
+
+  return {
+    preview: paths.widget,
+    script: paths.widgetScript,
+  };
+}
+
 async function injectSnippetToFile(targetPath) {
   const raw = await readTextSafe(targetPath);
   if (!raw) {

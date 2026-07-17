@@ -9,7 +9,7 @@ import {
   addTelegramReplyMapping,
   startTelegramHandoffPolling,
 } from "./handoffs.js";
-import { chatCompletion, extractJsonObject } from "./llm.js";
+import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
 import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
 import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
@@ -104,6 +104,10 @@ function sanitizeLogField(value, maxLen = MAX_LOG_FIELD_LENGTH) {
     return normalized;
   }
   return `${normalized.slice(0, maxLen)}...`;
+}
+
+function fullLogText(value) {
+  return String(value ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n") || "(empty)";
 }
 
 function readRequestMeta(req) {
@@ -641,6 +645,9 @@ async function notifyTelegramHandoff(cwd, config, paths, sessionId) {
       error: "",
     });
     await addTelegramReplyMapping(cwd, config.channels.telegram.chat_id, sent.message_id, sessionId);
+    writeGlobalLog(
+      `[telegram] handoff notification sent\nsession_id: ${sanitizeLogField(sessionId)}\nmessage_id: ${sanitizeLogField(sent.message_id)}\ntranscript_length: ${transcript.length}`,
+    );
     return notified;
   } catch (error) {
     await updateTelegramHandoff(paths, sessionId, {
@@ -668,6 +675,9 @@ async function forwardVisitorMessageToTelegram(cwd, config, sessionId, message) 
       }
       await addTelegramReplyMapping(cwd, config.channels.telegram.chat_id, sent.message_id, sessionId);
     }
+    writeGlobalLog(
+      `[telegram] handoff visitor message forwarded\nsession_id: ${sanitizeLogField(sessionId)}\nmessage_length: ${message.length}\nvisitor_message:\n${fullLogText(message)}\ndelivered: true`,
+    );
     return { handoff, delivered: true };
   } catch (error) {
     writeGlobalLog(`[telegram] handoff visitor message failed\nsession_id: ${sanitizeLogField(sessionId)}\nerror: ${sanitizeLogField(error.message)}`);
@@ -691,10 +701,16 @@ async function replyDuringHumanSupport(cwd, config, paths, identity, message, re
 }
 
 async function requestHumanSupport(cwd, config, paths, identity, message, req, route) {
+  writeGlobalLog(
+    `[chat] human support requested\nsession_id: ${sanitizeLogField(identity.session_id)}\nmessage_length: ${message.length}\nvisitor_message:\n${fullLogText(message)}\nroute: ${sanitizeLogField(route)}`,
+  );
   const handoff = await notifyTelegramHandoff(cwd, config, paths, identity.session_id);
   const answer = handoff
     ? "Your request has been forwarded to the owner. Please wait for manual support."
     : "Manual support is temporarily unavailable. Please try again later.";
+  writeGlobalLog(
+    `[chat] human support handoff result\nsession_id: ${sanitizeLogField(identity.session_id)}\nstatus: ${sanitizeLogField(handoff?.status || "unavailable")}`,
+  );
 
   if (config.channels?.feishu?.webhook) {
     await notifyChannels(
@@ -873,7 +889,8 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
 }
 
 // 核心逻辑！分两步调用LLM。
-async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
+async function answerFromKnowledge(cwd, config, message, chatHistory = [], options = {}) {
+  const onDelta = typeof options.onDelta === "function" ? options.onDelta : () => undefined;
   const index = await loadKnowledgeIndex(cwd);
   const paths = runtimePaths(cwd);
   const indexMarkdown = (await readTextSafe(paths.knowledgeIndex)) || "";
@@ -890,6 +907,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
   //
   const docSelection = await selectDocs(cwd, config, index, message, chatHistory);
   if (docSelection.mode === "direct" && docSelection.direct_answer) {
+    onDelta(docSelection.direct_answer);
     return {
       ok: true,
       answer: docSelection.direct_answer,
@@ -932,7 +950,12 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = []) {
     },
   ];
 
-  const completion = await chatCompletion(config, messages, { temperature: 0.35, maxTokens: 900, trace: "chat:answer" });
+  const completion = await chatCompletionStream(config, messages, {
+    temperature: 0.35,
+    maxTokens: 900,
+    trace: "chat:answer",
+    onDelta,
+  });
   if (!completion.ok) {
     return { ok: false, error: completion.error };
   }
@@ -1022,8 +1045,8 @@ export async function startChatService(cwd, config, options = {}) {
     return result;
   }
 
-  async function appendAssistantReply(identity, content, context = {}) {
-    return appendAndPublish(identity, [{ role: "assistant", content }], context);
+  async function appendAssistantReply(identity, content, context = {}, messageOptions = {}) {
+    return appendAndPublish(identity, [{ ...messageOptions, role: "assistant", content }], context);
   }
 
   async function processSubmittedMessage(identity, userMessage, req, route) {
@@ -1062,11 +1085,25 @@ export async function startChatService(cwd, config, options = {}) {
     const recentHistory = (await loadChatHistory(paths, identity.session_id, DOC_SELECT_HISTORY_LIMIT + 1))
       .filter((item) => item.id !== userMessage.id)
       .slice(-DOC_SELECT_HISTORY_LIMIT);
-    const answer = await answerFromKnowledge(cwd, config, message, recentHistory);
+    const answerMessageId = crypto.randomUUID();
+    const answer = await answerFromKnowledge(cwd, config, message, recentHistory, {
+      onDelta: (delta) => {
+        publishChatEvent(identity.session_id, "delta", {
+          id: answerMessageId,
+          role: "assistant",
+          delta: String(delta || ""),
+        });
+      },
+    });
     const answerText = answer.ok
       ? answer.answer
       : `Service temporarily unavailable: ${answer.error}`;
-    await appendAssistantReply(identity, answerText, { req, route, mode: "knowledge_answer" });
+    await appendAssistantReply(
+      identity,
+      answerText,
+      { req, route, mode: "knowledge_answer" },
+      { id: answerMessageId },
+    );
   }
 
   function queueSubmittedMessage(identity, message, clientMessageId, req, route) {

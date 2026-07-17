@@ -137,9 +137,9 @@ Useful flags:
 
 ## Chating+
 
-After `/run` starts the local chat service, the installed widget provides a session-scoped conversation with Vila. A visitor message is accepted by `POST /chat` with `202 Accepted`; the response is delivered asynchronously through Server-Sent Events (SSE).
+After `/run` starts the local chat service, it refreshes the preview assets and serves the widget at `http://127.0.0.1:<port>/widget`; `/install` is not required for this local preview. Use `/install --apply` only when you want to inject the widget script into a website page. The widget provides a session-scoped conversation with Vila. A visitor message is accepted by `POST /chat` with `202 Accepted`; the response is delivered asynchronously through Server-Sent Events (SSE).
 
-The widget subscribes to `GET /chat/events?session_id=...`. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
+The widget subscribes to `GET /chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
 
 ### Human Takeover
 
@@ -155,6 +155,8 @@ Handoff state is stored under `.openvila/chats/`:
 - `telegram.json`: Telegram long-polling progress (`last_update_id`) and reply-to-session mappings
 
 Use an owner-only Telegram chat or group: anyone who can reply to a handoff notification can answer the linked visitor. A custom Telegram endpoint must support both `sendMessage` and `getUpdates`. Feishu currently receives notifications only and does not support two-way human takeover.
+
+Human-takeover events and Telegram long-polling input logs are written to `.openvila/logs/debug-YYYY-MM-DD.log`. Logs include session and update identifiers, routing status, message lengths, and complete visitor and Telegram reply text; bot credentials are not logged.
 
 ## Runtime Directory
 
