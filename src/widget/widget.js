@@ -4,6 +4,7 @@
   function resolveConfig() {
     var host = "";
     var port = "";
+    var color = "";
 
     var script = document.currentScript;
     if (!script) {
@@ -14,6 +15,7 @@
     if (script) {
       host = String(script.getAttribute("data-host") || "").trim();
       port = String(script.getAttribute("data-port") || "").trim();
+      color = String(script.getAttribute("data-color") || "").trim();
 
       var src = String(script.getAttribute("src") || "").trim();
       if (src) {
@@ -21,8 +23,10 @@
           var srcUrl = new URL(src, window.location.href);
           var queryHost = String(srcUrl.searchParams.get("host") || "").trim();
           var queryPort = String(srcUrl.searchParams.get("port") || "").trim();
+          var queryColor = String(srcUrl.searchParams.get("color") || "").trim();
           if (queryHost) host = queryHost;
           if (queryPort) port = queryPort;
+          if (queryColor) color = queryColor;
         } catch (error) {
           // ignore malformed src url
         }
@@ -37,7 +41,7 @@
       port = "9394";
     }
 
-    return { host: host, port: port };
+    return { host: host, port: port, color: color };
   }
 
   function buildApiBase(config) {
@@ -63,6 +67,14 @@
   var chatEvents = null;
   var waitingForReply = false;
   var replyWaitStartedAt = 0;
+  var CHAT_ICON_SVG =
+    '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round">' +
+    '<path d="M4 5h16v12H9l-5 3V5Z"></path>' +
+    "</svg>";
+  var CLOSE_ICON_SVG =
+    '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round">' +
+    '<path d="m6 6 12 12"></path><path d="m18 6-12 12"></path>' +
+    "</svg>";
 
   function generateId(prefix) {
     var value = "";
@@ -134,16 +146,28 @@
 
   panel.innerHTML =
     "" +
-    '<div style="padding:10px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;font:600 14px/1.4 sans-serif">OpenVila</div>' +
-    '<div id="openvila-messages" style="height:400px;overflow:auto;padding:12px;font:14px/1.5 sans-serif;background:#ffffff"></div>' +
-    '<form id="openvila-form" style="display:flex;gap:8px;padding:10px;border-top:1px solid #e2e8f0;background:#f8fafc">' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px 8px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;font:600 14px/1.4 sans-serif">' +
+    '<div style="display:flex;align-items:center;gap:7px">' +
+    CHAT_ICON_SVG +
+    "<span>Chat with us</span></div>" +
+    '<button id="openvila-close" type="button" aria-label="Close chat" title="Close chat" style="display:grid;place-items:center;width:28px;height:28px;border:none;border-radius:6px;background:transparent;color:#64748b;cursor:pointer">' +
+    CLOSE_ICON_SVG +
+    "</button></div>" +
+    '<div id="openvila-messages" style="height:382px;overflow:auto;padding:12px;font:14px/1.5 sans-serif;background:#ffffff"></div>' +
+    '<form id="openvila-form" style="padding:10px;border-top:1px solid #e2e8f0;background:#f8fafc">' +
+    '<div style="display:flex;gap:8px">' +
     '<input id="openvila-input" placeholder="Ask anything..." style="flex:1;padding:8px;border:1px solid #cbd5e1;border-radius:8px" />' +
     '<button id="openvila-submit" style="padding:8px 12px;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer">Send</button>' +
+    "</div>" +
+    '<div style="margin-top:6px;text-align:right;color:#94a3b8;font:11px/1.2 sans-serif"><a href="https://openvila.com" target="_blank" rel="noopener noreferrer" aria-label="OpenVila website (opens in a new tab)" style="display:inline-flex;align-items:center;gap:3px;color:inherit;text-decoration:none">Powered by OpenVila<svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M14 3h7v7"></path><path d="M10 14 21 3"></path><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"></path></svg></a></div>' +
     "</form>";
+  panel.querySelector("#openvila-submit").style.background = widgetConfig.color || "#2563eb";
 
   var button = document.createElement("button");
   button.id = "openvila-launcher";
-  button.textContent = "V";
+  button.innerHTML = CHAT_ICON_SVG;
+  button.setAttribute("aria-label", "Open chat");
+  button.title = "Open chat";
   button.style.position = "fixed";
   button.style.right = "20px";
   button.style.bottom = "20px";
@@ -151,9 +175,10 @@
   button.style.height = "52px";
   button.style.borderRadius = "50%";
   button.style.border = "none";
-  button.style.background = "linear-gradient(135deg,#2563eb,#0ea5e9)";
+  button.style.background = widgetConfig.color || "linear-gradient(135deg,#2563eb,#0ea5e9)";
   button.style.color = "#fff";
-  button.style.font = "700 20px/1 sans-serif";
+  button.style.display = "grid";
+  button.style.placeItems = "center";
   button.style.cursor = "pointer";
   button.style.zIndex = "2147483647";
   button.style.boxShadow = "0 12px 28px rgba(37,99,235,.4)";
@@ -343,6 +368,11 @@
     } else {
       closeChatEvents();
     }
+  });
+
+  panel.querySelector("#openvila-close").addEventListener("click", function () {
+    panel.style.display = "none";
+    closeChatEvents();
   });
 
   var chatIdentity = getOrCreateIdentity();

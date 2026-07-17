@@ -55,6 +55,7 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
       ensureWidgetPreview: async (cwd) => {
         previewCalls.push(cwd);
       },
+      cliVersion: async () => "v1.2.3",
       startChatService: async (cwd, config, options) => {
         startCalls.push({ cwd, config, options });
         return {
@@ -83,7 +84,8 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
   ]);
   assert.deepEqual(previewCalls, ["/tmp/openvila-run-test"]);
   assert.equal(closeCalls, 1);
-  assert.ok(context.logs.some((line) => line.includes("Widget preview: http://127.0.0.1:9460/widget")));
+  assert.equal(context.logs[0].split("\n")[0], "OpenVila v1.2.3");
+  assert.ok(context.logs.some((line) => line.includes("Preview: http://127.0.0.1:9460/widget")));
   assert.ok(context.logs.some((line) => line.includes("http://127.0.0.1:9460")));
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: disabled")));
 });
@@ -102,6 +104,7 @@ test("runRun lets the command port override the runtime configuration", async ()
       ensureWidgetPreview: async (cwd) => {
         previewCwd = cwd;
       },
+      cliVersion: async () => "v1.2.3",
       startChatService: async (cwd, config, options) => {
         selectedPort = options.port;
         return {

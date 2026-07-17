@@ -139,6 +139,8 @@ Useful flags:
 
 After `/run` starts the local chat service, it refreshes the preview assets and serves the widget at `http://127.0.0.1:<port>/widget`; `/install` is not required for this local preview. Use `/install --apply` only when you want to inject the widget script into a website page. The widget provides a session-scoped conversation with Vila. A visitor message is accepted by `POST /chat` with `202 Accepted`; the response is delivered asynchronously through Server-Sent Events (SSE).
 
+Set the launcher and Send button background with `data-color` on the widget script, for example `<script src="/openvila/widget.js" data-color="#0f766e" defer></script>`. You can also use the URL query parameter `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue.
+
 The widget subscribes to `GET /chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
 
 ### Human Takeover
@@ -298,3 +300,13 @@ The Flask demo creates and seeds `data/blog.db` when it starts. The WordPress-st
 - `GET /owner/requests`
 - `POST /owner/approve`
 - `POST /owner/reject`
+
+## Publishing
+
+GitHub Actions publishes npm releases through the Trusted Publishing workflow at `.github/workflows/publish-npm.yml`. npm trusted publishers are configured on an existing package, so publish the first version manually, then configure a trusted publisher for package `openvila` with repository `okosioc/openvila` and workflow file `publish-npm.yml`.
+
+To release, update `package.json` to the target version, commit the change, then push a matching tag such as `v0.1.1`. The workflow runs `npm test`, verifies that the tag matches `package.json`, and publishes with provenance.
+
+## TODO
+
+- Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.

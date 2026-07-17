@@ -30,7 +30,10 @@ class FakeElement {
 
   set innerHTML(value) {
     this._innerHTML = value;
-    for (const id of ["openvila-messages", "openvila-form", "openvila-input", "openvila-submit"]) {
+    if (!String(value).includes("openvila-form")) {
+      return;
+    }
+    for (const id of ["openvila-close", "openvila-messages", "openvila-form", "openvila-input", "openvila-submit"]) {
       const element = new FakeElement(this.document);
       element.id = id;
       this.children.push(element);
@@ -44,6 +47,10 @@ class FakeElement {
   appendChild(child) {
     this.children.push(child);
     return child;
+  }
+
+  setAttribute(name, value) {
+    this[name] = String(value);
   }
 
   querySelector(selector) {
@@ -63,11 +70,11 @@ class FakeElement {
 }
 
 class FakeDocument {
-  constructor() {
+  constructor(scriptAttributes = {}) {
     this.elements = new Map();
     this.body = new FakeElement(this);
     this.currentScript = {
-      getAttribute: () => "",
+      getAttribute: (name) => scriptAttributes[name] || "",
     };
   }
 
@@ -85,7 +92,7 @@ class FakeDocument {
 }
 
 function createWidgetHarness(options = {}) {
-  const document = new FakeDocument();
+  const document = new FakeDocument(options.scriptAttributes);
   const eventSources = [];
   const storage = new Map();
   const fetchCalls = [];
@@ -185,6 +192,60 @@ function submitEvent() {
     preventDefault() {},
   };
 }
+
+test("widget uses a visitor-facing title with OpenVila attribution", async () => {
+  const harness = await loadWidget();
+  const markup = harness.document.getElementById("openvila-panel").innerHTML;
+  const launcher = harness.document.getElementById("openvila-launcher");
+
+  assert.match(markup, />Chat with us</);
+  assert.match(markup, /Powered by OpenVila/);
+  assert.match(markup, /href="https:\/\/openvila\.com"/);
+  assert.match(markup, /OpenVila website \(opens in a new tab\)/);
+  assert.match(markup, /text-align:right/);
+  assert.match(markup, /<svg/);
+  assert.match(launcher.innerHTML, /M4 5h16v12H9l-5 3V5Z/);
+  assert.match(launcher.innerHTML, /<svg/);
+  assert.equal(launcher["aria-label"], "Open chat");
+  assert.match(markup, /id="openvila-close"[^>]*><svg/);
+  assert.match(markup, /id="openvila-close"[^>]*aria-label="Close chat"/);
+});
+
+test("widget applies the configured launcher color", async () => {
+  const harness = await loadWidget({ scriptAttributes: { "data-color": "#0f766e" } });
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const submit = harness.document.getElementById("openvila-submit");
+
+  assert.equal(launcher.style.background, "#0f766e");
+  assert.equal(submit.style.background, "#0f766e");
+});
+
+test("widget query color overrides the script attribute", async () => {
+  const harness = await loadWidget({
+    scriptAttributes: {
+      "data-color": "#0f766e",
+      src: "/openvila/widget.js?color=%23be123c",
+    },
+  });
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const submit = harness.document.getElementById("openvila-submit");
+
+  assert.equal(launcher.style.background, "#be123c");
+  assert.equal(submit.style.background, "#be123c");
+});
+
+test("widget close button hides the panel and closes the event stream", async () => {
+  const harness = await loadWidget();
+  const panel = harness.document.getElementById("openvila-panel");
+  const close = harness.document.getElementById("openvila-close");
+  const eventSource = harness.eventSources[0];
+
+  assert.equal(panel.style.display, "block");
+  await close.emit("click");
+
+  assert.equal(panel.style.display, "none");
+  assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
+});
 
 test("widget renders streamed replies once and unlocks after the completed message", async () => {
   const harness = await loadWidget();
