@@ -1,6 +1,6 @@
 import process from "node:process";
 import readline from "node:readline";
-import { buildKnowledgeBase, prepareKnowledgeScanPlan } from "../core/knowledge.js";
+import { buildKnowledgeBase, prepareKnowledgeScanPlan, saveKnowledgeScanPlan } from "../core/knowledge.js";
 import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
@@ -58,20 +58,27 @@ function renderDatabaseQueries(plan, locale) {
 function renderScanPlan(ctx, plan) {
   const llmAssist = plan.filesystem.llm_assist;
   const llmSelectedTables = (plan.filesystem.knowledge_tables || []).length;
-  const dbSource = String(plan.database.source || "none");
   const dbAuto = plan.database.auto_discovery || {};
+  const analysisHeading = pick(
+    ctx.locale,
+    llmAssist.used
+      ? "[scan] 1/6 LLM分析结果（框架识别 + 知识文件和数据表识别）"
+      : "[scan] 1/6 Scan Plan（读取已确认的扫描范围）",
+    llmAssist.used
+      ? "[scan] 1/6 LLM Analysis Result (framework + knowledge files and tables)"
+      : "[scan] 1/6 Scan Plan (using confirmed scan scope)",
+  );
 
   return pick(
     ctx.locale,
     [
-      "[scan] 1/6 LLM分析结果（框架识别 + 知识文件和数据表识别）",
+      analysisHeading,
       `- framework: ${plan.framework || "unknown"}`,
       `- 识别信号: ${(plan.framework_signals || []).join(", ") || "none"}`,
-      `- LLM模型: ${llmAssist.model || "unknown"}`,
+      `- LLM模型: ${llmAssist.used ? llmAssist.model || "unknown" : "未调用（使用 scan plan）"}`,
       `- LLM命中文件: ${plan.filesystem.matched_paths.length} / ${plan.filesystem.total_candidates}`,
-      `- 数据库来源: ${dbSource}`,
-      `- 数据库发现: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- 数据库引擎: sqlite=${dbAuto.by_engine?.sqlite ?? 0}, mysql=${dbAuto.by_engine?.mysql ?? 0}, postgresql=${dbAuto.by_engine?.postgresql ?? 0}, mongodb=${dbAuto.by_engine?.mongodb ?? 0}`,
+      `- 数据库发现: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- LLM命中数据表: ${llmSelectedTables}`,
       "",
       "[scan] 2/6 待确认扫描范围",
@@ -80,14 +87,13 @@ function renderScanPlan(ctx, plan) {
       `- 远程 sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
     [
-      "[scan] 1/6 LLM Analysis Result (framework + knowledge files and tables)",
+      analysisHeading,
       `- framework: ${plan.framework || "unknown"}`,
       `- signals: ${(plan.framework_signals || []).join(", ") || "none"}`,
-      `- LLM model: ${llmAssist.model || "unknown"}`,
+      `- LLM model: ${llmAssist.used ? llmAssist.model || "unknown" : "not used (scan plan)"}`,
       `- LLM-selected knowledge files: ${plan.filesystem.matched_paths.length} from ${plan.filesystem.total_candidates}`,
-      `- database source: ${dbSource}`,
-      `- database discovery: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- database engines: sqlite=${dbAuto.by_engine?.sqlite ?? 0}, mysql=${dbAuto.by_engine?.mysql ?? 0}, postgresql=${dbAuto.by_engine?.postgresql ?? 0}, mongodb=${dbAuto.by_engine?.mongodb ?? 0}`,
+      `- database discovery: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- LLM-selected knowledge tables: ${llmSelectedTables}`,
       "",
       "[scan] 2/6 Scan Scope To Confirm",
@@ -158,6 +164,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
   const loadRuntimeConfig = dependencies.loadConfig || loadConfig;
   const prepareScanPlan = dependencies.prepareKnowledgeScanPlan || prepareKnowledgeScanPlan;
   const buildKnowledge = dependencies.buildKnowledgeBase || buildKnowledgeBase;
+  const saveScanPlan = dependencies.saveKnowledgeScanPlan || saveKnowledgeScanPlan;
 
   try {
     const dryRun = Boolean(argv.options["dry-run"]);
@@ -178,7 +185,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
         "[scan] 1/6 Building scan plan...",
       ),
     );
-    const plan = await prepareScanPlan(ctx.cwd, { config, skipDatabase, skipRemote });
+    const plan = await prepareScanPlan(ctx.cwd, { config, skipDatabase, skipRemote, resetPlan: reset });
     log(renderScanPlan(ctx, plan));
 
     if (dryRun) {
@@ -201,6 +208,11 @@ export async function runScan(ctx, argv, dependencies = {}) {
     if (!selections.filesystem && !selections.database && !selections.remote) {
       log(pick(ctx.locale, "[scan] 未选择任何扫描源，已取消。", "[scan] No scan source selected; cancelled."));
       return;
+    }
+
+    const scanPlanPath = await saveScanPlan(ctx.cwd, plan);
+    if (scanPlanPath) {
+      log(pick(ctx.locale, `[scan] 扫描计划已写入: ${scanPlanPath}`, `[scan] Scan plan written: ${scanPlanPath}`));
     }
 
     log(

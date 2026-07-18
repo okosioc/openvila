@@ -20,6 +20,9 @@ function commandSuggestions(locale) {
   return [
     { cmd: "/init", desc: pick(locale, "初始化运行目录", "initialize runtime directory") },
     { cmd: "/scan", desc: pick(locale, "扫描并编译知识库", "scan and compile knowledge") },
+    { cmd: "/scan --dry-run", desc: pick(locale, "预览扫描计划，不写入知识库", "preview scan plan without writing knowledge") },
+    { cmd: "/scan --no-db", desc: pick(locale, "跳过数据库规划和查询", "skip database planning and queries") },
+    { cmd: "/scan --no-remote", desc: pick(locale, "跳过 sitemap 规划和抓取", "skip sitemap planning and crawling") },
     { cmd: "/install", desc: pick(locale, "生成 widget 预览", "generate widget preview") },
     { cmd: "/install --apply", desc: pick(locale, "注入 widget 到页面", "inject widget into page") },
     { cmd: "/action list", desc: pick(locale, "查看 actions", "list actions") },
@@ -127,6 +130,9 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
   const [pendingQuestion, setPendingQuestion] = useState(null);
   const [cursorVisible, setCursorVisible] = useState(true);
   const inputRef = useRef("");
+  const commandHistoryRef = useRef([]);
+  const historyIndexRef = useRef(0);
+  const historyDraftRef = useRef("");
   const pendingQuestionRef = useRef(null);
   const pendingResolverRef = useRef(null);
   const suggestions = useMemo(() => {
@@ -213,6 +219,13 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
         return;
       }
 
+      const history = commandHistoryRef.current;
+      if (history[history.length - 1] !== trimmed) {
+        commandHistoryRef.current = [...history, trimmed];
+      }
+      historyIndexRef.current = commandHistoryRef.current.length;
+      historyDraftRef.current = "";
+
       if (trimmed === "/") {
         for (const lineText of helpLines(ctx.locale)) {
           appendLog(lineText);
@@ -278,6 +291,36 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
       return;
     }
 
+    if (!activeQuestion && key.upArrow) {
+      const history = commandHistoryRef.current;
+      if (history.length === 0) {
+        return;
+      }
+      if (historyIndexRef.current >= history.length) {
+        historyDraftRef.current = inputRef.current;
+      }
+      historyIndexRef.current = Math.max(0, historyIndexRef.current - 1);
+      const next = history[historyIndexRef.current];
+      setInputValue(next);
+      inputRef.current = next;
+      return;
+    }
+
+    if (!activeQuestion && key.downArrow) {
+      const history = commandHistoryRef.current;
+      if (historyIndexRef.current >= history.length) {
+        return;
+      }
+      historyIndexRef.current += 1;
+      const next =
+        historyIndexRef.current >= history.length
+          ? historyDraftRef.current
+          : history[historyIndexRef.current];
+      setInputValue(next);
+      inputRef.current = next;
+      return;
+    }
+
     if (key.return) {
       const value = inputRef.current;
       setInputValue("");
@@ -302,6 +345,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
     if (key.backspace || key.delete) {
       setInputValue((prev) => {
         const next = prev.slice(0, -1);
+        historyIndexRef.current = commandHistoryRef.current.length;
         inputRef.current = next;
         return next;
       });
@@ -344,6 +388,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
 
       setInputValue((prev) => {
         const next = `${prev}${printable}`;
+        historyIndexRef.current = commandHistoryRef.current.length;
         inputRef.current = next;
         return next;
       });
@@ -366,7 +411,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
       h(Text, null, `OpenVila Manager ${version}`),
       h(Text, null, `cwd: ${ctx.cwd}`),
       h(Text, null, `runtime: ${statusText(ctx.locale, runtimeReady)}`),
-      h(Text, null, pick(ctx.locale, "type /help, /exit", "type /help, /exit")),
+      h(Text, null, pick(ctx.locale, "输入 /help、/exit，↑/↓ 浏览历史命令", "type /help, /exit, ↑/↓ history")),
     ),
     h(
       Box,

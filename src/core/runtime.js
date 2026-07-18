@@ -29,6 +29,7 @@ export function runtimePaths(cwd) {
   return {
     base,
     config: path.join(base, "config.yaml"),
+    scanPlan: path.join(base, "scan-plan.yaml"),
     runtimeGitignore: path.join(base, ".gitignore"),
     knowledges: path.join(base, "knowledges"),
     knowledgeDocs: path.join(base, "knowledges", "docs"),

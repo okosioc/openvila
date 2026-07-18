@@ -1,20 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import ignore from "ignore";
 import {
-  discoverDatabaseTargets,
-  listDatabaseTableColumns,
-  listDatabaseTables,
-  resolveDatabaseTarget,
   runDatabaseJsonQuery,
   stringifyDbRow,
-  quoteDatabaseIdentifier,
 } from "../utils/db.js";
 import {
   cleanTextForPrompt,
   docBaseNameNoHash,
-  listFilesRecursive,
   normalizeStoredPath,
   readTextSafe,
   sanitizeDocNamePart,
@@ -25,29 +18,19 @@ import {
 import { fetchText, parseSitemapLocs, stripHtml } from "../utils/net.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
 import { ensureRuntime, loadConfig, resolveLlmSettings, runtimePaths } from "./runtime.js";
+import {
+  buildAutoDatabasePlan,
+  collectAutoDatabaseCandidates,
+  collectFilesystemCandidates,
+  databasePlanFromScanPlan,
+  emptyDatabasePlan,
+  expandScanPlanFiles,
+  generatedScanPlan,
+  loadKnowledgeScanPlan,
+  saveKnowledgeScanPlan,
+} from "./scan-plan.js";
 
-const KNOWLEDGE_EXTENSIONS = [
-  ".md",
-  ".txt",
-  ".html",
-  ".htm",
-  ".py",
-  ".js",
-  ".ts",
-  ".tsx",
-  ".jsx",
-  ".json",
-  ".yaml",
-  ".yml",
-  ".toml",
-  ".vue",
-  ".njk",
-  ".jinja",
-  ".j2",
-  ".php",
-  ".xml",
-  ".astro",
-];
+export { saveKnowledgeScanPlan } from "./scan-plan.js";
 
 function zhLocale(locale) {
   return String(locale || "").toLowerCase().startsWith("zh");
@@ -59,16 +42,6 @@ function t(locale, zhText, enText) {
 
 function unique(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0))];
-}
-
-async function loadGitignoreMatcher(cwd) {
-  const content = await readTextSafe(path.join(cwd, ".gitignore"));
-  if (content === null) {
-    return null;
-  }
-  const matcher = ignore().add(content);
-  return (relativePath, isDirectory) =>
-    matcher.ignores(relativePath) || (isDirectory && matcher.ignores(`${relativePath}/`));
 }
 
 function toArray(value) {
@@ -239,9 +212,9 @@ async function pickKnowledgesByLlm(config, options = {}) {
         "- Prioritize business text pages: pricing, terms, privacy, refund, faq/help, about/contact, product docs, support, policy pages, blog index/posts.",
         "- Prioritize tables holding user-visible business knowledge: pages/posts/articles/faq/policies/pricing/help/docs content.",
         "- Exclude static/code-only files: assets/**, static/**, public/**, dist/**, build/**, vendor/**, node_modules/**.",
-        "- Exclude style/script/media files: *.css, *.scss, *.sass, *.less, *.js.map, *.css.map, *.min.js, *.min.css, images/fonts/videos.",
+        "- Exclude style/script/media files: *.css, *.scss, *.sass, *.less, *.js.map, *.css.map, *.min.js, *.min.css, icons/svgs/images/fonts/videos.",
         "- Exclude lock/generated files: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lockb, poetry.lock, composer.lock.",
-        "- Exclude infra/system tables by default: migrations, alembic_version, sessions, cache, jobs, logs, audit tables.",
+        "- Exclude infra/system/test tables by default: migrations, alembic_version, sessions, cache, jobs, logs, audit tables.",
         "- Do NOT pad file count. It is valid to return fewer than 12 if fewer relevant files exist.",
         "- If uncertain whether a file/table carries user-facing business knowledge, exclude it.",
       ].join("\n"),
@@ -312,284 +285,6 @@ async function pickKnowledgesByLlm(config, options = {}) {
   };
 }
 
-function normalizeDbQueryConfig(cwd, rawQueries) {
-  return rawQueries
-    .map((item, idx) => {
-      if (!item || typeof item !== "object") {
-        return null;
-      }
-      const name = String(item.name || `query_${idx + 1}`).trim();
-      const query = String(item.query || "").trim();
-      const limit = Math.max(1, Math.min(Number(item.limit || 50) || 50, 300));
-
-      const target = resolveDatabaseTarget(cwd, item);
-      if (!target) {
-        return null;
-      }
-
-      let normalizedQuery = query;
-      if (!normalizedQuery && target.engine === "mongodb") {
-        const collection = String(item.collection || "").trim();
-        if (!collection) {
-          return null;
-        }
-        const spec = {
-          collection,
-          filter: item.filter && typeof item.filter === "object" ? item.filter : {},
-          sort: item.sort && typeof item.sort === "object" ? item.sort : undefined,
-          projection: item.projection && typeof item.projection === "object" ? item.projection : undefined,
-          limit,
-        };
-        normalizedQuery = JSON.stringify(spec);
-      }
-      if (!normalizedQuery) {
-        return null;
-      }
-
-      const tableName = String(item.table_name || (target.engine === "mongodb" ? item.collection : "")).trim();
-
-      return {
-        name,
-        engine: target.engine,
-        target,
-        target_label: target.label,
-        table_name: tableName || inferDbTableNameForQuery({
-          engine: target.engine,
-          query: normalizedQuery,
-        }),
-        query: normalizedQuery,
-        limit,
-      };
-    })
-    .filter(Boolean);
-}
-
-function configuredDatabaseQueries(cwd, config) {
-  const rawQueries = [
-    ...toArray(config?.scan?.database_queries),
-    ...toArray(config?.scan?.database?.queries),
-  ];
-  return normalizeDbQueryConfig(cwd, rawQueries);
-}
-
-function clampInt(value, min, max, fallback) {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.max(min, Math.min(Math.floor(parsed), max));
-}
-
-function sanitizeQueryName(value) {
-  return (
-    String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 96) || "auto_query"
-  );
-}
-
-function sanitizeNamePart(value, maxLen = 24) {
-  return (
-    String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, maxLen)
-  );
-}
-
-function inferSqlTableName(query) {
-  const text = String(query || "");
-  const matched = /\bfrom\s+([`"'[]?)([a-zA-Z0-9_.-]+)\1/i.exec(text);
-  if (!matched) {
-    return "";
-  }
-  const full = String(matched[2] || "").trim();
-  if (!full) return "";
-  const parts = full.split(".");
-  return parts[parts.length - 1] || "";
-}
-
-function inferMongoCollectionName(query) {
-  try {
-    const parsed = JSON.parse(String(query || ""));
-    return String(parsed?.collection || parsed?.coll || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-function inferDbTableNameForQuery(queryItem) {
-  const explicit = String(queryItem?.table_name || queryItem?.collection || "").trim();
-  if (explicit) {
-    return explicit;
-  }
-  const engine = String(queryItem?.engine || "").trim().toLowerCase();
-  if (engine === "mongodb") {
-    return inferMongoCollectionName(queryItem?.query);
-  }
-  return inferSqlTableName(queryItem?.query);
-}
-
-function queryTargetBase(target, engine) {
-  if (engine === "sqlite") {
-    const sqlitePath = String(target?.sqlite_path || target?.db_path || "").trim();
-    const base = sqlitePath ? path.basename(sqlitePath).replace(/\.[^.]+$/, "") : "";
-    return sanitizeNamePart(base, 28) || "sqlite";
-  }
-
-  if (engine === "mysql" || engine === "postgresql" || engine === "mongodb") {
-    let host = "";
-    let port = "";
-    let database = "";
-
-    const connectionUrl = String(target?.connection_url || "").trim();
-    if (connectionUrl) {
-      try {
-        const parsed = new URL(connectionUrl);
-        host = parsed.hostname || "";
-        port = parsed.port || "";
-        database = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
-      } catch {
-        // fallback to field-based extraction
-      }
-    }
-
-    host = host || String(target?.host || "").trim();
-    port = port || String(target?.port || "").trim();
-    database = database || String(target?.database || "").trim();
-
-    const parts = [
-      sanitizeNamePart(host, 22),
-      port ? sanitizeNamePart(`p${port}`, 10) : "",
-      sanitizeNamePart(database, 22),
-    ].filter(Boolean);
-    return parts.join("_") || engine;
-  }
-
-  return sanitizeNamePart(engine, 20) || "db";
-}
-
-function tableCandidateKey(targetKey, tableName) {
-  return `${targetKey}::${tableName}`;
-}
-
-function normalizeSelectedKnowledgeTables(values) {
-  return unique(toArray(values).map((item) => String(item || "").trim()));
-}
-
-async function collectAutoDatabaseCandidates(cwd, config) {
-  const discovered = await discoverDatabaseTargets(cwd, {
-    maxFiles: clampInt(config?.scan?.db_auto_max_files, 20, 500, 220),
-    maxSourceFiles: clampInt(config?.scan?.db_auto_max_source_files, 300, 3000, 1600),
-    maxSourceFileSize: clampInt(config?.scan?.db_auto_max_source_file_size, 16 * 1024, 256 * 1024, 96 * 1024),
-  });
-  const targets = (discovered.targets || []).slice().sort((a, b) => String(a?.key || "").localeCompare(String(b?.key || "")));
-  const maxCandidates = clampInt(config?.scan?.db_auto_max_candidate_tables, 20, 1200, 360);
-  const tableCandidates = [];
-  let totalTables = 0;
-
-  for (const target of targets) {
-    const tables = await listDatabaseTables(target).catch(() => []);
-    totalTables += tables.length;
-    for (const tableName of tables) {
-      const columns = await listDatabaseTableColumns(target, tableName).catch(() => []);
-      tableCandidates.push({
-        key: tableCandidateKey(target.key, tableName),
-        engine: target.engine,
-        target_key: target.key,
-        target_label: target.label,
-        target,
-        table_name: tableName,
-        columns,
-      });
-      if (tableCandidates.length >= maxCandidates) {
-        break;
-      }
-    }
-    if (tableCandidates.length >= maxCandidates) {
-      break;
-    }
-  }
-
-  return {
-    table_candidates: tableCandidates,
-    auto_discovery: {
-      database_count: targets.length,
-      table_count: totalTables,
-      candidate_tables: tableCandidates.length,
-      discovered_files: discovered.discovered_files || [],
-      mentioned_tokens: discovered.mentioned_tokens || [],
-      unresolved_tokens: discovered.unresolved_tokens || [],
-      by_engine: discovered.by_engine || {
-        sqlite: 0,
-        mysql: 0,
-        postgresql: 0,
-        mongodb: 0,
-      },
-    },
-  };
-}
-
-async function buildAutoDatabasePlan(cwd, config, knowledgeTables = [], autoDbCandidates = null) {
-  const candidateBundle = autoDbCandidates || (await collectAutoDatabaseCandidates(cwd, config));
-  const tableCandidates = Array.isArray(candidateBundle?.table_candidates) ? candidateBundle.table_candidates : [];
-  const selectedTableKeys = new Set(normalizeSelectedKnowledgeTables(knowledgeTables));
-
-  const selectedTables = tableCandidates.filter((item) => selectedTableKeys.has(item.key));
-  const maxTables = clampInt(config?.scan?.db_auto_max_tables, 1, 40, 6);
-  const limit = clampInt(config?.scan?.db_auto_query_limit, 1, 300, 80);
-  const queries = selectedTables
-    .slice(0, maxTables)
-    .map((item) => {
-      const targetBase = queryTargetBase(item.target, item.engine);
-      const queryName = sanitizeQueryName(`auto_${item.engine}_${targetBase}_${item.table_name}`);
-      const query =
-        item.engine === "mongodb"
-          ? JSON.stringify({
-              collection: item.table_name,
-              filter: {},
-              sort: { _id: -1 },
-              limit,
-            })
-          : `SELECT * FROM ${quoteDatabaseIdentifier(item.engine, item.table_name)} LIMIT ${limit}`;
-      return {
-        name: queryName,
-        engine: item.engine,
-        target: item.target,
-        target_label: item.target_label,
-        table_name: item.table_name,
-        query,
-        limit,
-      };
-    })
-    .filter(Boolean);
-
-  return {
-    queries,
-    source: queries.length > 0 ? "auto" : "none",
-    auto_discovery: {
-      ...(candidateBundle?.auto_discovery || {
-        database_count: 0,
-        table_count: 0,
-        candidate_tables: 0,
-        discovered_files: [],
-        mentioned_tokens: [],
-        unresolved_tokens: [],
-        by_engine: {
-          sqlite: 0,
-          mysql: 0,
-          postgresql: 0,
-          mongodb: 0,
-        },
-      }),
-      selected_tables: queries.length,
-    },
-  };
-}
-
 function inferLocale(config) {
   return String(config?.language || "en");
 }
@@ -603,42 +298,52 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
 
   const skipDatabase = Boolean(options.skipDatabase);
   const skipRemote = Boolean(options.skipRemote);
-  const configuredQueries = skipDatabase ? [] : configuredDatabaseQueries(cwd, config);
+  const scanPlan = options.resetPlan ? null : await loadKnowledgeScanPlan(cwd);
+  const relatives = await collectFilesystemCandidates(cwd, config);
+
+  if (scanPlan) {
+    const database = skipDatabase ? emptyDatabasePlan() : databasePlanFromScanPlan(cwd, config, scanPlan);
+    const remoteUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
+    const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
+    const remoteMaxPages = Math.max(1, Math.min(remoteMaxPagesRaw, 80));
+    const filesystem = {
+      framework: "scan-plan",
+      framework_signals: [],
+      total_candidates: relatives.length,
+      matched_paths: expandScanPlanFiles(relatives, scanPlan),
+      knowledge_tables: [],
+      llm_assist: {
+        used: false,
+        model: "",
+        selected: 0,
+      },
+    };
+
+    return {
+      generated_at: new Date().toISOString(),
+      framework: filesystem.framework,
+      framework_signals: filesystem.framework_signals,
+      filesystem,
+      database,
+      remote: {
+        sitemap_url: remoteUrl,
+        max_pages: remoteMaxPages,
+        enabled: Boolean(remoteUrl),
+      },
+      locale: inferLocale(config),
+      scan_plan_path: runtimePaths(cwd).scanPlan,
+    };
+  }
+
   const autoDbEnabled = !skipDatabase && config?.scan?.db_auto !== false;
-  // 分析备选数据库
   const autoDbCandidates =
-    autoDbEnabled && configuredQueries.length === 0
+    autoDbEnabled
       ? await collectAutoDatabaseCandidates(cwd, config)
       : {
           table_candidates: [],
-          auto_discovery: {
-            database_count: 0,
-            table_count: 0,
-            candidate_tables: 0,
-            discovered_files: [],
-            mentioned_tokens: [],
-            unresolved_tokens: [],
-            by_engine: {
-              sqlite: 0,
-              mysql: 0,
-              postgresql: 0,
-              mongodb: 0,
-            },
-          },
+          auto_discovery: emptyDatabasePlan().auto_discovery,
         };
 
-  // 读取备选文件
-  const maxFiles = Number(config?.scan?.max_files || 1200) || 1200;
-  const gitignoreMatcher = await loadGitignoreMatcher(cwd);
-  const allFiles = await listFilesRecursive(cwd, {
-    onlyExt: KNOWLEDGE_EXTENSIONS,
-    maxFileSize: 300 * 1024,
-    maxFiles,
-    shouldIgnore: gitignoreMatcher,
-  });
-  const relatives = allFiles.map((fullPath) => toPosixPath(path.relative(cwd, fullPath))).sort();
-
-  // 调用LLM获取潜在知识文件和数据表
   const llmResult = await pickKnowledgesByLlm(config, {
     candidatePaths: relatives,
     tableCandidates: autoDbCandidates.table_candidates || [],
@@ -657,55 +362,9 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     },
   };
 
-  let database = null;
-  if (configuredQueries.length > 0) {
-    database = {
-      queries: configuredQueries,
-      source: "configured",
-      auto_discovery: {
-        database_count: 0,
-        table_count: 0,
-        selected_tables: configuredQueries.length,
-        candidate_tables: 0,
-        discovered_files: [],
-        mentioned_tokens: [],
-        unresolved_tokens: [],
-        by_engine: {
-          sqlite: 0,
-          mysql: 0,
-          postgresql: 0,
-          mongodb: 0,
-        },
-      },
-    };
-  } else if (!autoDbEnabled) {
-    database = {
-      queries: [],
-      source: "none",
-      auto_discovery: {
-        database_count: 0,
-        table_count: 0,
-        selected_tables: 0,
-        candidate_tables: 0,
-        discovered_files: [],
-        mentioned_tokens: [],
-        unresolved_tokens: [],
-        by_engine: {
-          sqlite: 0,
-          mysql: 0,
-          postgresql: 0,
-          mongodb: 0,
-        },
-      },
-    };
-  } else {
-    database = await buildAutoDatabasePlan(
-      cwd,
-      config,
-      filesystem.knowledge_tables || [],
-      autoDbCandidates,
-    );
-  }
+  const database = autoDbEnabled
+    ? buildAutoDatabasePlan(config, filesystem.knowledge_tables || [], autoDbCandidates)
+    : emptyDatabasePlan();
 
   const remoteUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
   const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
@@ -724,6 +383,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     database,
     remote,
     locale: inferLocale(config),
+    generated_scan_plan: generatedScanPlan(filesystem, database),
   };
 }
 
@@ -864,7 +524,7 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
         limit: queryItem.limit,
       });
       const engineToken = sanitizeDocNamePart(queryItem.engine || target.engine || "db", "db", 20);
-      const tableName = inferDbTableNameForQuery(queryItem) || queryItem.name || "table";
+      const tableName = String(queryItem.table_name || queryItem.name || "table").trim();
       const tableToken = sanitizeDocNamePart(tableName, "table", 56);
       for (let i = 0; i < rows.length && i < queryItem.limit; i += 1) {
         const row = rows[i];
@@ -1273,6 +933,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     options.plan ||
     (await prepareKnowledgeScanPlan(cwd, {
       config,
+      resetPlan: Boolean(options.reset),
     }));
   const selections = defaultSelections(plan, options.selections || {});
   const log = typeof options.log === "function" ? options.log : () => undefined;

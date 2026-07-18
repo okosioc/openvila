@@ -18,14 +18,13 @@ function createPlan(options = {}) {
     framework: "static",
     framework_signals: ["index.html"],
     filesystem: {
-      llm_assist: { model: "test-model", selected: 1 },
+      llm_assist: { used: true, model: "test-model", selected: 1 },
       knowledge_tables: [],
       total_candidates: 2,
       matched_paths: ["faq.html"],
     },
     database: {
       queries: [],
-      source: "none",
       auto_discovery: { by_engine: {} },
     },
     remote: {
@@ -69,22 +68,28 @@ function createBuildResult() {
 test("runScan previews a plan without writing knowledge files in dry-run mode", async () => {
   const context = createContext();
   let buildCalled = false;
+  let saveCalled = false;
+  const plan = createPlan({ generated_scan_plan: { version: 1, files: ["faq.html"] } });
 
   await runScan(
     context,
     { options: { "dry-run": true } },
     {
       loadConfig: async () => ({ scan: {} }),
-      prepareKnowledgeScanPlan: async () => createPlan(),
+      prepareKnowledgeScanPlan: async () => plan,
       buildKnowledgeBase: async () => {
         buildCalled = true;
+      },
+      saveKnowledgeScanPlan: async () => {
+        saveCalled = true;
       },
     },
   );
 
   assert.equal(buildCalled, false);
+  assert.equal(saveCalled, false);
   assert.ok(context.logs.some((line) => line.includes("Scan Scope To Confirm")));
-  assert.ok(context.logs.some((line) => line.includes("LLM matched file list (1 / 2):\n  - faq.html")));
+  assert.ok(context.logs.some((line) => line.includes("LLM matched file list (1 / 2):\n  faq.html")));
   assert.ok(context.logs.some((line) => line.includes("dry-run completed")));
 });
 
@@ -119,10 +124,11 @@ test("runScan applies selected scan sources and reset mode", async () => {
   const context = createContext();
   const buildCalls = [];
   let planOptions = null;
+  let savedPlan = null;
   const plan = createPlan({
+    generated_scan_plan: { version: 1, files: ["faq.html"] },
     database: {
       queries: [{ name: "posts", engine: "sqlite" }],
-      source: "configured",
       auto_discovery: { by_engine: { sqlite: 1 } },
     },
     remote: {
@@ -145,14 +151,19 @@ test("runScan applies selected scan sources and reset mode", async () => {
         buildCalls.push({ cwd, options });
         return createBuildResult();
       },
+      saveKnowledgeScanPlan: async (cwd, scanPlan) => {
+        savedPlan = { cwd, scanPlan };
+        return "/tmp/openvila-scan-test/.openvila/scan-plan.yaml";
+      },
     },
   );
 
   assert.equal(buildCalls.length, 1);
   assert.deepEqual(planOptions, {
     cwd: "/tmp/openvila-scan-test",
-    options: { config: { scan: {} }, skipDatabase: true, skipRemote: true },
+    options: { config: { scan: {} }, skipDatabase: true, skipRemote: true, resetPlan: true },
   });
+  assert.deepEqual(savedPlan, { cwd: "/tmp/openvila-scan-test", scanPlan: plan });
   assert.equal(buildCalls[0].cwd, "/tmp/openvila-scan-test");
   assert.deepEqual(buildCalls[0].options.config, { scan: {} });
   assert.equal(buildCalls[0].options.plan, plan);
@@ -161,13 +172,12 @@ test("runScan applies selected scan sources and reset mode", async () => {
   assert.equal(typeof buildCalls[0].options.log, "function");
   const analysisLog = context.logs.find((line) => line.includes("LLM Analysis Result"));
   const scopeLog = context.logs.find((line) => line.includes("Scan Scope To Confirm"));
-  assert.match(analysisLog, /database source: configured/);
   assert.match(analysisLog, /database discovery:/);
   assert.match(analysisLog, /database engines:/);
   const scopeSection = scopeLog.split("[scan] 2/6 Scan Scope To Confirm\n")[1];
   assert.ok(scopeSection);
-  assert.doesNotMatch(scopeSection, /database source:|database discovery:|database engines:/);
-  assert.match(scopeSection, /database query list \(1\):\n  - posts \(sqlite\)/);
+  assert.doesNotMatch(scopeSection, /database discovery:|database engines:/);
+  assert.match(scopeSection, /database query list \(1\):\n  posts \(sqlite\)/);
   assert.ok(context.logs.some((line) => line.includes("scan_mode: reset")));
 });
 
@@ -177,7 +187,6 @@ test("runScan limits database queries in scan plan logs", async () => {
   const plan = createPlan({
     database: {
       queries,
-      source: "configured",
       auto_discovery: { by_engine: {} },
     },
   });
