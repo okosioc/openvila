@@ -4,6 +4,8 @@ import { buildKnowledgeBase, prepareKnowledgeScanPlan } from "../core/knowledge.
 import { loadConfig } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 
+const SCAN_PLAN_PREVIEW_LIMIT = 30;
+
 function askLine(rl, promptText) {
   return new Promise((resolve) => {
     rl.question(promptText, (answer) => resolve(String(answer || "").trim()));
@@ -18,47 +20,79 @@ function isYes(answer, defaultYes = true) {
   return normalized === "y" || normalized === "yes";
 }
 
+function renderMatchedPaths(plan, locale) {
+  const matchedPaths = plan.filesystem.matched_paths || [];
+  const previewPaths = matchedPaths.slice(0, SCAN_PLAN_PREVIEW_LIMIT);
+  const remaining = matchedPaths.length - previewPaths.length;
+  const title = pick(
+    locale,
+    `- LLM命中文件列表（${matchedPaths.length} / ${plan.filesystem.total_candidates}）：`,
+    `- LLM matched file list (${matchedPaths.length} / ${plan.filesystem.total_candidates}):`,
+  );
+  const remainingLine =
+    remaining > 0
+      ? pick(locale, `  ... 其余 ${remaining} 个文件`, `  ... ${remaining} more files`)
+      : null;
+  return [title, ...previewPaths.map((filePath) => `  ${filePath}`), remainingLine].filter(Boolean);
+}
+
+function renderDatabaseQueries(plan, locale) {
+  const queries = plan.database.queries || [];
+  if (queries.length === 0) {
+    return [pick(locale, "- 数据库查询：none", "- database queries: none")];
+  }
+  const previewQueries = queries.slice(0, SCAN_PLAN_PREVIEW_LIMIT);
+  const remaining = queries.length - previewQueries.length;
+  const title = pick(locale, `- 数据库查询列表（${queries.length}）：`, `- database query list (${queries.length}):`);
+  const remainingLine =
+    remaining > 0
+      ? pick(locale, `  ... 其余 ${remaining} 条查询`, `  ... ${remaining} more queries`)
+      : null;
+  return [
+    title,
+    ...previewQueries.map((item) => `  ${item.name} (${item.target_label || item.target?.label || item.engine || "db"})`),
+    remainingLine,
+  ].filter(Boolean);
+}
+
 function renderScanPlan(ctx, plan) {
   const llmAssist = plan.filesystem.llm_assist;
   const llmSelectedTables = (plan.filesystem.knowledge_tables || []).length;
-  const dbQueries = plan.database.queries
-    .map((item) => `${item.name} (${item.target_label || item.target?.label || item.engine || "db"})`)
-    .slice(0, 6);
   const dbSource = String(plan.database.source || "none");
   const dbAuto = plan.database.auto_discovery || {};
 
   return pick(
     ctx.locale,
     [
-      "[scan] 1/6-2/6 LLM分析结果（框架识别 + 知识文件识别）",
+      "[scan] 1/6 LLM分析结果（框架识别 + 知识文件和数据表识别）",
       `- framework: ${plan.framework || "unknown"}`,
       `- 识别信号: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- LLM模型: ${llmAssist.model || "unknown"}`,
-      `- LLM选择知识文件数: ${llmAssist.selected || plan.filesystem.matched_paths.length}`,
-      `- LLM选择知识表数: ${llmSelectedTables}`,
-      "",
-      "[scan] 3/6 待确认扫描范围",
-      `- 文件候选数: ${plan.filesystem.total_candidates}, 命中数: ${plan.filesystem.matched_paths.length}`,
+      `- LLM命中文件: ${plan.filesystem.matched_paths.length} / ${plan.filesystem.total_candidates}`,
       `- 数据库来源: ${dbSource}`,
-      `- 数据库 queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
       `- 数据库发现: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- 数据库引擎: sqlite=${dbAuto.by_engine?.sqlite ?? 0}, mysql=${dbAuto.by_engine?.mysql ?? 0}, postgresql=${dbAuto.by_engine?.postgresql ?? 0}, mongodb=${dbAuto.by_engine?.mongodb ?? 0}`,
+      `- LLM命中数据表: ${llmSelectedTables}`,
+      "",
+      "[scan] 2/6 待确认扫描范围",
+      ...renderMatchedPaths(plan, ctx.locale),
+      ...renderDatabaseQueries(plan, ctx.locale),
       `- 远程 sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
     [
-      "[scan] 1/6-2/6 LLM Analysis Result (framework + knowledge files)",
+      "[scan] 1/6 LLM Analysis Result (framework + knowledge files and tables)",
       `- framework: ${plan.framework || "unknown"}`,
       `- signals: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- LLM model: ${llmAssist.model || "unknown"}`,
-      `- LLM-selected knowledge files: ${llmAssist.selected || plan.filesystem.matched_paths.length}`,
-      `- LLM-selected knowledge tables: ${llmSelectedTables}`,
-      "",
-      "[scan] 3/6 Scan Scope To Confirm",
-      `- file candidates: ${plan.filesystem.total_candidates}, matched: ${plan.filesystem.matched_paths.length}`,
+      `- LLM-selected knowledge files: ${plan.filesystem.matched_paths.length} from ${plan.filesystem.total_candidates}`,
       `- database source: ${dbSource}`,
-      `- database queries: ${dbQueries.length > 0 ? dbQueries.join(", ") : "none"}`,
       `- database discovery: db=${dbAuto.database_count ?? 0}, tables=${dbAuto.table_count ?? 0}, candidates=${dbAuto.candidate_tables ?? 0}, selected=${dbAuto.selected_tables ?? 0}`,
       `- database engines: sqlite=${dbAuto.by_engine?.sqlite ?? 0}, mysql=${dbAuto.by_engine?.mysql ?? 0}, postgresql=${dbAuto.by_engine?.postgresql ?? 0}, mongodb=${dbAuto.by_engine?.mongodb ?? 0}`,
+      `- LLM-selected knowledge tables: ${llmSelectedTables}`,
+      "",
+      "[scan] 2/6 Scan Scope To Confirm",
+      ...renderMatchedPaths(plan, ctx.locale),
+      ...renderDatabaseQueries(plan, ctx.locale),
       `- remote sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
     ].join("\n"),
   );
@@ -129,6 +163,8 @@ export async function runScan(ctx, argv, dependencies = {}) {
     const dryRun = Boolean(argv.options["dry-run"]);
     const assumeYes = Boolean(argv.options.yes);
     const reset = Boolean(argv.options.reset);
+    const skipDatabase = Boolean(argv.options["no-db"]);
+    const skipRemote = Boolean(argv.options["no-remote"]);
     const config = await loadRuntimeConfig(ctx.cwd, { createIfMissing: false });
 
     if (typeof ctx.logFilePath === "string" && ctx.logFilePath) {
@@ -138,11 +174,11 @@ export async function runScan(ctx, argv, dependencies = {}) {
     log(
       pick(
         ctx.locale,
-        "[scan] 1/6-3/6 生成扫描计划中（LLM识别框架与知识文件 + 预览扫描范围）...",
-        "[scan] 1/6-3/6 Building scan plan (LLM framework/knowledge-file analysis + scope preview)...",
+        "[scan] 1/6 生成扫描计划中...",
+        "[scan] 1/6 Building scan plan...",
       ),
     );
-    const plan = await prepareScanPlan(ctx.cwd, { config });
+    const plan = await prepareScanPlan(ctx.cwd, { config, skipDatabase, skipRemote });
     log(renderScanPlan(ctx, plan));
 
     if (dryRun) {
@@ -152,8 +188,8 @@ export async function runScan(ctx, argv, dependencies = {}) {
 
     const defaults = {
       filesystem: !Boolean(argv.options["no-filesystem"]),
-      database: plan.database.queries.length > 0 && !Boolean(argv.options["no-db"]),
-      remote: plan.remote.enabled && !Boolean(argv.options["no-remote"]),
+      database: plan.database.queries.length > 0 && !skipDatabase,
+      remote: plan.remote.enabled && !skipRemote,
     };
 
     const selections = assumeYes ? defaults : await confirmSelections(ctx, plan, defaults);
@@ -170,8 +206,8 @@ export async function runScan(ctx, argv, dependencies = {}) {
     log(
       pick(
         ctx.locale,
-        `[scan] 4/6 开始扫描（filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote}）`,
-        `[scan] 4/6 Start scanning (filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote})`,
+        `[scan] 3/6 开始扫描（filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote}）`,
+        `[scan] 3/6 Start scanning (filesystem=${selections.filesystem}, db=${selections.database}, remote=${selections.remote})`,
       ),
     );
 
@@ -187,7 +223,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
       pick(
         ctx.locale,
         [
-          "[scan] 4/6-6/6 已执行：扫描 → 文档编译 → 更新索引 → 写入 manifest.json",
+          "[scan] 3/6-5/6 已执行：扫描 → 文档编译 → 更新索引",
           "[scan] 6/6 汇总",
           `- framework: ${result.framework || "unknown"}`,
           `- 扫描文档数: ${result.scanned}`,
@@ -201,7 +237,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
           `- manifest: ${result.paths.knowledgeManifest}`,
         ].join("\n"),
         [
-          "[scan] 4/6-6/6 Completed: scan -> doc compile -> index update -> manifest.json",
+          "[scan] 3/6-5/6 Completed: scan -> doc compile -> index update",
           "[scan] 6/6 Summary",
           `- framework: ${result.framework || "unknown"}`,
           `- scanned docs: ${result.scanned}`,

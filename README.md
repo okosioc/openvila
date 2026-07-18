@@ -106,6 +106,8 @@ openvila run
    - all sections are sorted by `docs/*` file name
 6. write `knowledges/manifest.json` and print summary
 
+Before LLM planning, `/scan` follows root `.gitignore`, skips styles (`.css`, `.scss`), and skips multimedia files such as images and videos.
+
 `/scan` requires working LLM settings: `openvila_llm_endpoint`, `openvila_llm_api_key`, `openvila_llm_model`.
 
 Database scan behavior:
@@ -132,8 +134,8 @@ Useful flags:
 - `--dry-run`: preview plan only, no writes
 - `--reset`: force full rebuild instead of incremental update
 - `--yes`: skip interactive confirmation and use defaults
-- `--no-db`: skip database queries (configured + auto-discovered)
-- `--no-remote`: skip sitemap crawling
+- `--no-db`: skip database planning and queries (configured + auto-discovered)
+- `--no-remote`: skip sitemap planning and crawling
 
 ## Chating+
 

@@ -44,6 +44,7 @@ export async function listFilesRecursive(rootDir, opts = {}) {
   const maxFileSize = opts.maxFileSize || 256 * 1024;
   const maxFiles = opts.maxFiles || 600;
   const onlyExt = opts.onlyExt || null;
+  const shouldIgnore = typeof opts.shouldIgnore === "function" ? opts.shouldIgnore : () => false;
   const result = [];
 
   async function walk(current) {
@@ -58,8 +59,9 @@ export async function listFilesRecursive(rootDir, opts = {}) {
       }
 
       const fullPath = path.join(current, entry.name);
+      const relativePath = toPosixPath(path.relative(rootDir, fullPath));
       if (entry.isDirectory()) {
-        if (ignoredDirs.has(entry.name)) {
+        if (ignoredDirs.has(entry.name) || shouldIgnore(relativePath, true)) {
           continue;
         }
         await walk(fullPath);
@@ -67,6 +69,10 @@ export async function listFilesRecursive(rootDir, opts = {}) {
       }
 
       if (!entry.isFile()) {
+        continue;
+      }
+
+      if (shouldIgnore(relativePath, false)) {
         continue;
       }
 

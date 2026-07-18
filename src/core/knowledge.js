@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import ignore from "ignore";
 import {
   discoverDatabaseTargets,
   listDatabaseTableColumns,
@@ -39,8 +40,6 @@ const KNOWLEDGE_EXTENSIONS = [
   ".yaml",
   ".yml",
   ".toml",
-  ".css",
-  ".scss",
   ".vue",
   ".njk",
   ".jinja",
@@ -60,6 +59,16 @@ function t(locale, zhText, enText) {
 
 function unique(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0))];
+}
+
+async function loadGitignoreMatcher(cwd) {
+  const content = await readTextSafe(path.join(cwd, ".gitignore"));
+  if (content === null) {
+    return null;
+  }
+  const matcher = ignore().add(content);
+  return (relativePath, isDirectory) =>
+    matcher.ignores(relativePath) || (isDirectory && matcher.ignores(`${relativePath}/`));
 }
 
 function toArray(value) {
@@ -592,8 +601,11 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
       createIfMissing: false,
     }).catch(() => ({})));
 
-  const configuredQueries = configuredDatabaseQueries(cwd, config);
-  const autoDbEnabled = config?.scan?.db_auto !== false;
+  const skipDatabase = Boolean(options.skipDatabase);
+  const skipRemote = Boolean(options.skipRemote);
+  const configuredQueries = skipDatabase ? [] : configuredDatabaseQueries(cwd, config);
+  const autoDbEnabled = !skipDatabase && config?.scan?.db_auto !== false;
+  // 分析备选数据库
   const autoDbCandidates =
     autoDbEnabled && configuredQueries.length === 0
       ? await collectAutoDatabaseCandidates(cwd, config)
@@ -615,14 +627,18 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
           },
         };
 
+  // 读取备选文件
   const maxFiles = Number(config?.scan?.max_files || 1200) || 1200;
+  const gitignoreMatcher = await loadGitignoreMatcher(cwd);
   const allFiles = await listFilesRecursive(cwd, {
     onlyExt: KNOWLEDGE_EXTENSIONS,
     maxFileSize: 300 * 1024,
     maxFiles,
+    shouldIgnore: gitignoreMatcher,
   });
   const relatives = allFiles.map((fullPath) => toPosixPath(path.relative(cwd, fullPath))).sort();
 
+  // 调用LLM获取潜在知识文件和数据表
   const llmResult = await pickKnowledgesByLlm(config, {
     candidatePaths: relatives,
     tableCandidates: autoDbCandidates.table_candidates || [],
@@ -691,7 +707,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     );
   }
 
-  const remoteUrl = String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
+  const remoteUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
   const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
   const remoteMaxPages = Math.max(1, Math.min(remoteMaxPagesRaw, 80));
   const remote = {
@@ -1376,8 +1392,8 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     log(
       t(
         locale,
-        `5/6 LLM 批量编译变更文档，共 ${compilePlan.batches.length} 批（batch_chars=${compilePlan.settings.batchChars}）...`,
-        `5/6 LLM compiling changed docs in batches: ${compilePlan.batches.length} (batch_chars=${compilePlan.settings.batchChars})...`,
+        `4/6 LLM 批量编译变更文档，共 ${compilePlan.batches.length} 批（batch_chars=${compilePlan.settings.batchChars}）...`,
+        `4/6 LLM compiling changed docs in batches: ${compilePlan.batches.length} (batch_chars=${compilePlan.settings.batchChars})...`,
       ),
     );
 
@@ -1424,7 +1440,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       }
     }
   } else {
-    log(t(locale, "5/6 无新增或变更文档，跳过文档编译。", "5/6 No added/changed docs. Skipping compile."));
+    log(t(locale, "4/6 无新增或变更文档，跳过文档编译。", "4/6 No added/changed docs. Skipping compile."));
   }
 
   const finalIndexMap = {};
@@ -1471,8 +1487,8 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   log(
     t(
       locale,
-      "6/6 重建 index.md（并写入 manifest.json）...",
-      "6/6 Rebuilding index.md (and writing manifest.json) ...",
+      "5/6 重建 index.md（并写入 manifest.json）...",
+      "5/6 Rebuilding index.md (and writing manifest.json) ...",
     ),
   );
   const indexMarkdown = await renderIndexMarkdown({
