@@ -397,7 +397,7 @@ async function executeCommand(ctx, tokens) {
     const version = await cliVersion();
     await runUi(ctx, {
       version,
-      executeTokens: (innerTokens, logger, asker) => executeWithLogger(ctx, innerTokens, logger, asker),
+      executeTokens: (innerTokens, logger, asker, editor) => executeWithLogger(ctx, innerTokens, logger, asker, editor),
     });
     return true;
   }
@@ -459,13 +459,14 @@ async function executeCommand(ctx, tokens) {
   return true;
 }
 
-async function executeWithLogger(ctx, tokens, logger, asker) {
-  if (typeof logger !== "function" && typeof asker !== "function") {
+async function executeWithLogger(ctx, tokens, logger, asker, editor) {
+  if (typeof logger !== "function" && typeof asker !== "function" && typeof editor !== "function") {
     return executeCommand(ctx, tokens);
   }
 
   const originalLog = ctx.log;
   const originalAsk = ctx.ask;
+  const originalEditScanPlanText = ctx.editScanPlanText;
   const fileLog = ctx.fileLog;
   if (typeof logger === "function") {
     ctx.log = (text) => {
@@ -479,11 +480,15 @@ async function executeWithLogger(ctx, tokens, logger, asker) {
   if (typeof asker === "function") {
     ctx.ask = asker;
   }
+  if (typeof editor === "function") {
+    ctx.editScanPlanText = editor;
+  }
   try {
     return await executeCommand(ctx, tokens);
   } finally {
     ctx.log = originalLog;
     ctx.ask = originalAsk;
+    ctx.editScanPlanText = originalEditScanPlanText;
   }
 }
 
@@ -534,7 +539,7 @@ async function main() {
         const version = await cliVersion();
         await runUi(ctx, {
           version,
-          executeTokens: (tokens, logger, asker) => executeWithLogger(ctx, tokens, logger, asker),
+          executeTokens: (tokens, logger, asker, editor) => executeWithLogger(ctx, tokens, logger, asker, editor),
         });
       } else {
         await runFallbackRepl(ctx);

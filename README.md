@@ -99,7 +99,7 @@ openvila run
 `/scan` uses a human-in-loop workflow:
 1. on the first scan, or with `--reset`, LLM identifies framework and knowledge files from candidate file list
 2. show scan scope for owner confirmation
-3. write the confirmed scope to editable `.openvila/scan-plan.yaml`; later scans reuse it without LLM source planning
+3. write the confirmed scope to editable `.openvila/scan-plan`; later scans reuse it without LLM source planning
 4. scan selected sources (filesystem / scan-plan database tables / optional sitemap)
 5. default incremental diff (`added/changed/deleted/unchanged`) by source hash, unless `--reset`, then LLM batch-compiles only `added/changed` sources into `knowledges/docs/*.md` (including `is_frequently_asked`)
 6. update/remove compiled docs for changed/deleted sources, then regenerate `knowledges/index.md` from `index_map` every run:
@@ -113,75 +113,55 @@ Before LLM planning, `/scan` follows root `.gitignore`, skips styles (`.css`, `.
 
 ### Scan Plan
 
-After the first confirmed scan, OpenVila writes `.openvila/scan-plan.yaml`. This is the editable scan scope. Later `/scan` runs reuse the plan without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite the plan, then fully rebuild the knowledge base.
+After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite it, then fully rebuild the knowledge base.
 
-```yaml
-version: 1
-files:
-  - www/templates/public/terms-of-service.html
-  - www/templates/public/contact.html
-  - www/posts/**
+On the first scan (and with `--reset`), the confirmation prompt accepts `e` to edit the generated plan before it is saved. OpenVila opens `$VISUAL`, then `$EDITOR`, or `vi`, validates the edited lines, and shows the updated scan scope for a second confirmation. The final `.openvila/scan-plan` is written only after confirmation.
 
-database:
-  engine: mongodb
-  connection_url: mongodb://localhost:27017/demo
-  tables:
-    - posts
-  limit: 80
+```text
+file://www/templates/public/terms-of-service.html
+file://www/templates/public/contact.html
+file://www/posts/**
+mongodb://localhost:27017/demo::posts
 ```
 
-The initial plan contains exact LLM-selected file paths. To include future files automatically, manually add a glob to `files`:
+Each non-empty line is one scan source:
 
-- `www/posts/*`: matches files directly inside `www/posts/`.
-- `www/posts/**`: matches files inside `www/posts/` and every nested directory.
+- `file://<path-or-glob>`: a file path or glob relative to the project root.
+- `<connection_url>::<table>`: one SQL table or MongoDB collection. The final `::` separates the table name, so IPv6 connection URLs work.
 
-Patterns are relative to the project root and still respect `.gitignore` and supported text-file extensions. Use `*` for one path segment and `**` for recursive directories; OpenVila never adds these patterns automatically.
+The initial plan contains exact LLM-selected file paths. To include future files automatically, manually add a file glob:
 
-Use one `database` object for a single database, or `databases:` with the same item structure for multiple databases. Examples for each supported SQL engine:
+- `file://www/posts/*`: matches files directly inside `www/posts/`.
+- `file://www/posts/**`: matches files inside `www/posts/` and every nested directory.
 
-```yaml
-# SQLite
-database:
-  engine: sqlite
-  sqlite_path: data/site.db
-  tables:
-    - posts
-    - pages
-  limit: 80
+Patterns still respect `.gitignore` and supported text-file extensions. Use `*` for one path segment and `**` for recursive directories; OpenVila never adds these patterns automatically.
+
+Examples for supported database engines:
+
+```text
+sqlite://data/site.db::posts
+sqlite://data/site.db::pages
 ```
 
-```yaml
-# MySQL
-database:
-  engine: mysql
-  connection_url: mysql://openvila:password@127.0.0.1:3306/site
-  tables:
-    - posts
-  limit: 80
+SQLite paths use `connection_url`: `sqlite://data/site.db` is relative to the project root, while `sqlite:///data/site.db` is an absolute path.
+
+```text
+mysql://openvila:password@127.0.0.1:3306/site::posts
+postgresql://openvila:password@127.0.0.1:5432/site::posts
 ```
 
-```yaml
-# PostgreSQL
-database:
-  engine: postgresql
-  connection_url: postgresql://openvila:password@127.0.0.1:5432/site
-  tables:
-    - posts
-  limit: 80
-```
-
-A table (MongoDB collection) listed in the scan plan is queried on every scan, so new or changed rows are included automatically. Keep connection URLs with passwords in local-only files.
+A table (MongoDB collection) listed in the scan plan is queried on every scan, so new or changed rows are included automatically. The row limit comes from `scan.db_auto_query_limit` in `config.yaml` (default `80`). Keep connection URLs with passwords in local-only files.
 
 Database scan behavior:
-- if `scan-plan.yaml` contains `database`/`databases`, `/scan` uses its table list
-- otherwise, if `scan.db_auto` is true (default), the first scan auto-discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then writes those selections into `scan-plan.yaml`
+- with `.openvila/scan-plan`, `/scan` uses plan mode and its listed tables
+- without `.openvila/scan-plan`, `/scan` uses auto mode: it discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then writes the selected sources into `.openvila/scan-plan`; `--reset` forces auto mode
 - optional auto knobs: `scan.db_auto_max_tables` (default `6`), `scan.db_auto_query_limit` (default `80`), `scan.db_auto_max_candidate_tables` (default `360`)
 - database access uses Node drivers (`sqlite3` / `mysql2` / `pg` / `mongodb`), no external DB CLI requirement
-- add or remove database tables by editing `database.tables` / `databases[].tables` in `scan-plan.yaml`; unsupported database engines and failed table queries are logged while other sources continue
+- add or remove database tables by adding or removing `<connection_url>::<table>` lines; unsupported database engines and failed table queries are logged while other sources continue
 
 ### Knowledges
 
-`knowledges/` is generated from the sources selected by `scan-plan.yaml`:
+`knowledges/` is generated from the sources selected by `scan-plan`:
 
 ```text
 .openvila/knowledges/
@@ -199,14 +179,14 @@ Database scan behavior:
 - `index.md`: generated index with `Frequent Customer Concerns` and `All Documents` sections.
 - `manifest.json`: generated source hashes, source-to-document mapping, `index_map`, frequent source list, and LLM call stats; do not edit it.
 
-Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by the database `limit` in `scan-plan.yaml` (default `80`). Doc compilation batches use `scan.llm_compile_batch_chars` (default `100000`).
+Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by `scan.db_auto_query_limit` in `config.yaml` (default `80`). Doc compilation batches use `scan.llm_compile_batch_chars` (default `100000`).
 
 - all CLI logs are written to daily rotated logs: `.openvila/logs/debug-YYYY-MM-DD.log`
 - each LLM call logs request input and response output to the same daily log file
 
 Useful flags:
 - `--dry-run`: preview plan only, no writes
-- `--reset`: regenerate `scan-plan.yaml` with LLM and fully rebuild the knowledge base
+- `--reset`: regenerate `scan-plan` with LLM and fully rebuild the knowledge base
 - `--yes`: skip interactive confirmation and use defaults
 - `--no-db`: skip scan-plan database tables and automatic database discovery
 - `--no-remote`: skip sitemap planning and crawling
@@ -246,7 +226,7 @@ my-website/
   .openvila/
     .gitignore
     config.yaml
-    scan-plan.yaml
+    scan-plan
     knowledges/
       index.md
       manifest.json

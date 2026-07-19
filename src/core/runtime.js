@@ -29,7 +29,7 @@ export function runtimePaths(cwd) {
   return {
     base,
     config: path.join(base, "config.yaml"),
-    scanPlan: path.join(base, "scan-plan.yaml"),
+    scanPlan: path.join(base, "scan-plan"),
     runtimeGitignore: path.join(base, ".gitignore"),
     knowledges: path.join(base, "knowledges"),
     knowledgeDocs: path.join(base, "knowledges", "docs"),
@@ -76,7 +76,6 @@ export function defaultConfig() {
       llm_compile_batch_chars: 100000,
       llm_compile_doc_chars: 18000,
       llm_compile_max_tokens: 4800,
-      db_auto: true,
       db_auto_max_tables: 6,
       db_auto_max_candidate_tables: 360,
       db_auto_query_limit: 80,

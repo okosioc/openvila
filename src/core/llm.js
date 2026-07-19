@@ -32,6 +32,23 @@ function sanitizeForLogContent(value, maxLen = 30000) {
   return cleanTextForPrompt(decodeEscapedNewlines(String(value ?? "")), maxLen);
 }
 
+function serializeLlmResponse(response) {
+  try {
+    return decodeEscapedNewlines(JSON.stringify(response)) || "{}";
+  } catch {
+    return decodeEscapedNewlines(response) || "[unserializable response]";
+  }
+}
+
+function emptyContentError(llmPrefix, response, reason = "no content in choices[0].message.content") {
+  const fullResponse = serializeLlmResponse(response);
+  const summary = sanitizeForLogContent(fullResponse, 2000);
+  return {
+    log: `${llmPrefix}> [error] ${reason}\nresponse: ${fullResponse}`,
+    error: `LLM response has no content: ${summary}`,
+  };
+}
+
 function messageContentToText(content) {
   if (typeof content === "string") {
     return content;
@@ -221,10 +238,11 @@ export async function chatCompletion(config, messages, overrides = {}) {
 
     const content = json?.choices?.[0]?.message?.content;
     if (!content) {
-      emitOutputLog(`${llmPrefix}> [error] no content in choices[0].message.content`);
+      const failure = emptyContentError(llmPrefix, json);
+      emitOutputLog(failure.log);
       return {
         ok: false,
-        error: "LLM response has no content",
+        error: failure.error,
       };
     }
 
@@ -310,10 +328,11 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
       const json = await response.json().catch(() => ({}));
       const content = json?.choices?.[0]?.message?.content;
       if (!content) {
-        emitOutputLog(`${llmPrefix}> [error] no content in choices[0].message.content`);
+        const failure = emptyContentError(llmPrefix, json);
+        emitOutputLog(failure.log);
         return {
           ok: false,
-          error: "LLM response has no content",
+          error: failure.error,
         };
       }
 
@@ -340,6 +359,7 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
     let buffer = "";
     let accumulated = "";
     let done = false;
+    let lastPayload = null;
 
     while (!done) {
       const { value, done: readDone } = await reader.read();
@@ -378,6 +398,8 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
           continue;
         }
 
+        lastPayload = payload;
+
         const delta = extractStreamDeltaText(payload);
         if (!delta) {
           continue;
@@ -389,10 +411,11 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
     }
 
     if (!accumulated) {
-      emitOutputLog(`${llmPrefix}> [error] empty stream content`);
+      const failure = emptyContentError(llmPrefix, lastPayload, "empty stream content");
+      emitOutputLog(failure.log);
       return {
         ok: false,
-        error: "LLM stream returned empty content",
+        error: failure.error,
       };
     }
 

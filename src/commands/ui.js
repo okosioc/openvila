@@ -3,6 +3,7 @@ import { Box, Text, render, useApp, useInput } from "ink";
 import { isRuntimeInitialized } from "../core/runtime.js";
 import { pick } from "../i18n/messages.js";
 import { normalizeCommandName, splitArgs } from "../utils/args.js";
+import { editTextInEditor } from "../utils/editor.js";
 
 const ASCII_LOGO = [
   " _______  _______  _______  __    _  __   __  ___   ___      _______ ",
@@ -21,6 +22,7 @@ function commandSuggestions(locale) {
     { cmd: "/init", desc: pick(locale, "初始化运行目录", "initialize runtime directory") },
     { cmd: "/scan", desc: pick(locale, "扫描并编译知识库", "scan and compile knowledge") },
     { cmd: "/scan --dry-run", desc: pick(locale, "预览扫描计划，不写入知识库", "preview scan plan without writing knowledge") },
+    { cmd: "/scan --reset", desc: pick(locale, "重建扫描计划并完整重建知识库", "regenerate scan plan and fully rebuild knowledge") },
     { cmd: "/scan --no-db", desc: pick(locale, "跳过数据库规划和查询", "skip database planning and queries") },
     { cmd: "/scan --no-remote", desc: pick(locale, "跳过 sitemap 规划和抓取", "skip sitemap planning and crawling") },
     { cmd: "/install", desc: pick(locale, "生成 widget 预览", "generate widget preview") },
@@ -172,6 +174,20 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
     [ctx.locale],
   );
 
+  const editTextInUi = useCallback(async (text) => {
+    const shouldRestoreRawMode = typeof process.stdin.setRawMode === "function" && process.stdin.isRaw;
+    if (shouldRestoreRawMode) {
+      process.stdin.setRawMode(false);
+    }
+    try {
+      return await editTextInEditor(text);
+    } finally {
+      if (shouldRestoreRawMode) {
+        process.stdin.setRawMode(true);
+      }
+    }
+  }, []);
+
   const headerLines = useMemo(() => ASCII_LOGO, []);
 
   useEffect(() => {
@@ -261,6 +277,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
             appendLog(text);
           },
           askInUi,
+          editTextInUi,
         );
 
         if (keepRunning === false) {
@@ -275,7 +292,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
         setBusy(false);
       }
     },
-    [appendLog, askInUi, ctx.locale, executeTokens, exit, onExit, refreshRuntime],
+    [appendLog, askInUi, ctx.locale, editTextInUi, executeTokens, exit, onExit, refreshRuntime],
   );
 
   useInput((input, key) => {
@@ -411,7 +428,7 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
       h(Text, null, `OpenVila Manager ${version}`),
       h(Text, null, `cwd: ${ctx.cwd}`),
       h(Text, null, `runtime: ${statusText(ctx.locale, runtimeReady)}`),
-      h(Text, null, pick(ctx.locale, "输入 /help、/exit，↑/↓ 浏览历史命令", "type /help, /exit, ↑/↓ history")),
+      h(Text, null, pick(ctx.locale, "输入 / 可选择命令，↑/↓ 浏览历史命令", "type / to choose commands, ↑/↓ history")),
     ),
     h(
       Box,

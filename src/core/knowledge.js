@@ -176,7 +176,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
       framework: "unknown",
       framework_signals: [],
       knowledge_files: [],
-      knowledge_tables: [],
+      selected_table_keys: [],
       model: llm.model,
     };
   }
@@ -261,9 +261,8 @@ async function pickKnowledgesByLlm(config, options = {}) {
       }
     }
   }
-  const rawKnowledgeTables = Array.isArray(parsed?.knowledge_tables) ? parsed.knowledge_tables : [];
-  const knowledgeTables = unique(
-    rawKnowledgeTables
+  const selectedTableKeys = unique(
+    (Array.isArray(parsed?.knowledge_tables) ? parsed.knowledge_tables : [])
       .map((item) => {
         const normalized = String(item || "").trim().toLowerCase();
         if (!normalized) return "";
@@ -272,7 +271,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
       .filter(Boolean),
   );
 
-  if (knowledgeFiles.length === 0 && knowledgeTables.length === 0) {
+  if (knowledgeFiles.length === 0 && selectedTableKeys.length === 0) {
     throw new Error("LLM file planning returned no knowledge_files/knowledge_tables.");
   }
 
@@ -280,7 +279,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
     framework,
     framework_signals: frameworkSignals,
     knowledge_files: knowledgeFiles,
-    knowledge_tables: knowledgeTables,
+    selected_table_keys: selectedTableKeys,
     model: llm.model,
   };
 }
@@ -298,7 +297,8 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
 
   const skipDatabase = Boolean(options.skipDatabase);
   const skipRemote = Boolean(options.skipRemote);
-  const scanPlan = options.resetPlan ? null : await loadKnowledgeScanPlan(cwd);
+  const scanPlanOverride = options.scanPlan;
+  const scanPlan = options.resetPlan ? null : scanPlanOverride || (await loadKnowledgeScanPlan(cwd));
   const relatives = await collectFilesystemCandidates(cwd, config);
 
   if (scanPlan) {
@@ -307,22 +307,16 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
     const remoteMaxPages = Math.max(1, Math.min(remoteMaxPagesRaw, 80));
     const filesystem = {
-      framework: "scan-plan",
-      framework_signals: [],
       total_candidates: relatives.length,
       matched_paths: expandScanPlanFiles(relatives, scanPlan),
-      knowledge_tables: [],
-      llm_assist: {
-        used: false,
-        model: "",
-        selected: 0,
-      },
     };
 
     return {
       generated_at: new Date().toISOString(),
-      framework: filesystem.framework,
-      framework_signals: filesystem.framework_signals,
+      planning_mode: "plan",
+      framework: "scan-plan",
+      framework_signals: [],
+      llm_model: "",
       filesystem,
       database,
       remote: {
@@ -332,17 +326,14 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
       },
       locale: inferLocale(config),
       scan_plan_path: runtimePaths(cwd).scanPlan,
+      generated_scan_plan: scanPlanOverride || undefined,
     };
   }
 
-  const autoDbEnabled = !skipDatabase && config?.scan?.db_auto !== false;
   const autoDbCandidates =
-    autoDbEnabled
-      ? await collectAutoDatabaseCandidates(cwd, config)
-      : {
-          table_candidates: [],
-          auto_discovery: emptyDatabasePlan().auto_discovery,
-        };
+    skipDatabase
+      ? { table_candidates: [], discovery: emptyDatabasePlan().discovery }
+      : await collectAutoDatabaseCandidates(cwd, config);
 
   const llmResult = await pickKnowledgesByLlm(config, {
     candidatePaths: relatives,
@@ -350,21 +341,13 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
   });
 
   const filesystem = {
-    framework: llmResult.framework || "unknown",
-    framework_signals: llmResult.framework_signals || [],
     total_candidates: relatives.length,
     matched_paths: llmResult.knowledge_files,
-    knowledge_tables: llmResult.knowledge_tables || [],
-    llm_assist: {
-      used: true,
-      model: llmResult.model,
-      selected: llmResult.knowledge_files.length,
-    },
   };
 
-  const database = autoDbEnabled
-    ? buildAutoDatabasePlan(config, filesystem.knowledge_tables || [], autoDbCandidates)
-    : emptyDatabasePlan();
+  const database = skipDatabase
+    ? emptyDatabasePlan()
+    : buildAutoDatabasePlan(config, llmResult.selected_table_keys || [], autoDbCandidates);
 
   const remoteUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
   const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
@@ -377,8 +360,10 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
 
   return {
     generated_at: new Date().toISOString(),
-    framework: filesystem.framework || "unknown",
-    framework_signals: filesystem.framework_signals || [],
+    planning_mode: "auto",
+    framework: llmResult.framework || "unknown",
+    framework_signals: llmResult.framework_signals || [],
+    llm_model: llmResult.model,
     filesystem,
     database,
     remote,

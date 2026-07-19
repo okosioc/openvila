@@ -15,17 +15,18 @@ function createContext(options = {}) {
 
 function createPlan(options = {}) {
   return {
+    planning_mode: "auto",
     framework: "static",
     framework_signals: ["index.html"],
+    llm_model: "test-model",
     filesystem: {
-      llm_assist: { used: true, model: "test-model", selected: 1 },
-      knowledge_tables: [],
       total_candidates: 2,
       matched_paths: ["faq.html"],
     },
     database: {
       queries: [],
-      auto_discovery: { by_engine: {} },
+      selected_table_keys: [],
+      discovery: { by_engine: {} },
     },
     remote: {
       enabled: false,
@@ -69,7 +70,7 @@ test("runScan previews a plan without writing knowledge files in dry-run mode", 
   const context = createContext();
   let buildCalled = false;
   let saveCalled = false;
-  const plan = createPlan({ generated_scan_plan: { version: 1, files: ["faq.html"] } });
+  const plan = createPlan({ generated_scan_plan: { files: ["faq.html"] } });
 
   await runScan(
     context,
@@ -89,7 +90,7 @@ test("runScan previews a plan without writing knowledge files in dry-run mode", 
   assert.equal(buildCalled, false);
   assert.equal(saveCalled, false);
   assert.ok(context.logs.some((line) => line.includes("Scan Scope To Confirm")));
-  assert.ok(context.logs.some((line) => line.includes("LLM matched file list (1 / 2):\n  faq.html")));
+  assert.ok(context.logs.some((line) => line.includes("file list (1 / 2):\n  faq.html")));
   assert.ok(context.logs.some((line) => line.includes("dry-run completed")));
 });
 
@@ -98,8 +99,6 @@ test("runScan limits matched file paths in scan plan logs", async () => {
   const matchedPaths = Array.from({ length: 31 }, (_, index) => `docs/page-${index + 1}.md`);
   const plan = createPlan({
     filesystem: {
-      llm_assist: { model: "test-model", selected: 31 },
-      knowledge_tables: [],
       total_candidates: 80,
       matched_paths: matchedPaths,
     },
@@ -114,7 +113,7 @@ test("runScan limits matched file paths in scan plan logs", async () => {
     },
   );
 
-  const scopeLog = context.logs.find((line) => line.includes("LLM matched file list"));
+  const scopeLog = context.logs.find((line) => line.includes("file list"));
   assert.match(scopeLog, /docs\/page-30\.md/);
   assert.doesNotMatch(scopeLog, /docs\/page-31\.md/);
   assert.match(scopeLog, /\.\.\. 1 more files/);
@@ -126,10 +125,11 @@ test("runScan applies selected scan sources and reset mode", async () => {
   let planOptions = null;
   let savedPlan = null;
   const plan = createPlan({
-    generated_scan_plan: { version: 1, files: ["faq.html"] },
+    generated_scan_plan: { files: ["faq.html"] },
     database: {
-      queries: [{ name: "posts", engine: "sqlite" }],
-      auto_discovery: { by_engine: { sqlite: 1 } },
+      queries: [{ target: { key: "sqlite://data/site.db" }, table_name: "posts" }],
+      selected_table_keys: ["sqlite://data/site.db::posts"],
+      discovery: { by_engine: { sqlite: 1 } },
     },
     remote: {
       enabled: true,
@@ -153,7 +153,7 @@ test("runScan applies selected scan sources and reset mode", async () => {
       },
       saveKnowledgeScanPlan: async (cwd, scanPlan) => {
         savedPlan = { cwd, scanPlan };
-        return "/tmp/openvila-scan-test/.openvila/scan-plan.yaml";
+        return "/tmp/openvila-scan-test/.openvila/scan-plan";
       },
     },
   );
@@ -172,22 +172,81 @@ test("runScan applies selected scan sources and reset mode", async () => {
   assert.equal(typeof buildCalls[0].options.log, "function");
   const analysisLog = context.logs.find((line) => line.includes("LLM Analysis Result"));
   const scopeLog = context.logs.find((line) => line.includes("Scan Scope To Confirm"));
-  assert.match(analysisLog, /database discovery:/);
-  assert.match(analysisLog, /database engines:/);
   const scopeSection = scopeLog.split("[scan] 2/6 Scan Scope To Confirm\n")[1];
   assert.ok(scopeSection);
-  assert.doesNotMatch(scopeSection, /database discovery:|database engines:/);
-  assert.match(scopeSection, /database query list \(1\):\n  posts \(sqlite\)/);
+  assert.match(scopeSection, /database table keys \(1\):\n  sqlite:\/\/data\/site\.db::posts/);
+  const summaryLog = context.logs.find((line) => line.includes("[scan] 6/6 Summary"));
+  assert.doesNotMatch(summaryLog, /framework:/);
   assert.ok(context.logs.some((line) => line.includes("scan_mode: reset")));
+});
+
+test("runScan lets the owner edit a generated scan plan before confirming", async () => {
+  const answers = ["e", "y"];
+  const context = createContext({ ask: async () => answers.shift() });
+  const initialPlan = createPlan({
+    generated_scan_plan: { files: ["faq.html"] },
+  });
+  const editedPlan = createPlan({
+    planning_mode: "plan",
+    framework: "scan-plan",
+    llm_model: "",
+    filesystem: {
+      total_candidates: 2,
+      matched_paths: ["docs/guide.md"],
+    },
+  });
+  const prepareCalls = [];
+  let savedPlan = null;
+  let buildPlan = null;
+
+  await runScan(
+    context,
+    { options: {} },
+    {
+      loadConfig: async () => ({ scan: {} }),
+      prepareKnowledgeScanPlan: async (cwd, options) => {
+        prepareCalls.push({ cwd, options });
+        if (options.scanPlan) {
+          return { ...editedPlan, generated_scan_plan: options.scanPlan };
+        }
+        return initialPlan;
+      },
+      editScanPlanText: async (text) => {
+        assert.match(text, /^file:\/\/faq\.html\n$/);
+        return "file://docs/**\n";
+      },
+      saveKnowledgeScanPlan: async (cwd, plan) => {
+        savedPlan = { cwd, plan };
+        return "/tmp/openvila-scan-test/.openvila/scan-plan";
+      },
+      buildKnowledgeBase: async (cwd, options) => {
+        buildPlan = { cwd, plan: options.plan };
+        return createBuildResult();
+      },
+    },
+  );
+
+  assert.equal(prepareCalls.length, 2);
+  assert.deepEqual(prepareCalls[1].options.scanPlan, { files: ["docs/**"] });
+  assert.equal(prepareCalls[1].options.resetPlan, false);
+  assert.deepEqual(savedPlan.plan.generated_scan_plan, { files: ["docs/**"] });
+  assert.equal(buildPlan.plan, savedPlan.plan);
+  assert.ok(context.logs.some((line) => line.includes("Opening editor for scan plan")));
+  assert.ok(context.logs.some((line) => line.includes("Edited scan scope regenerated")));
+  assert.equal(context.logs.filter((line) => line.includes("Scan Scope To Confirm")).length, 2);
 });
 
 test("runScan limits database queries in scan plan logs", async () => {
   const context = createContext();
-  const queries = Array.from({ length: 31 }, (_, index) => ({ name: `query_${index + 1}`, engine: "sqlite" }));
+  const queries = Array.from({ length: 31 }, (_, index) => ({
+    target: { key: "sqlite://data/site.db" },
+    table_name: `query_${index + 1}`,
+  }));
   const plan = createPlan({
     database: {
       queries,
-      auto_discovery: { by_engine: {} },
+      selected_table_keys: [],
+      discovery: { by_engine: {} },
     },
   });
 
@@ -200,10 +259,10 @@ test("runScan limits database queries in scan plan logs", async () => {
     },
   );
 
-  const scopeLog = context.logs.find((line) => line.includes("database query list"));
-  assert.match(scopeLog, /query_30 \(sqlite\)/);
-  assert.doesNotMatch(scopeLog, /query_31 \(sqlite\)/);
-  assert.match(scopeLog, /\.\.\. 1 more queries/);
+  const scopeLog = context.logs.find((line) => line.includes("database table keys"));
+  assert.match(scopeLog, /sqlite:\/\/data\/site\.db::query_30/);
+  assert.doesNotMatch(scopeLog, /sqlite:\/\/data\/site\.db::query_31/);
+  assert.match(scopeLog, /\.\.\. 1 more tables/);
 });
 
 test("runScan stops when the owner declines the scan plan", async () => {
@@ -224,4 +283,24 @@ test("runScan stops when the owner declines the scan plan", async () => {
 
   assert.equal(buildCalled, false);
   assert.ok(context.logs.some((line) => line.includes("Cancelled.")));
+});
+
+test("runScan propagates failures without logging them twice", async () => {
+  const context = createContext();
+
+  await assert.rejects(
+    runScan(
+      context,
+      { options: {} },
+      {
+        loadConfig: async () => ({ scan: {} }),
+        prepareKnowledgeScanPlan: async () => {
+          throw new Error("planning failed");
+        },
+      },
+    ),
+    /planning failed/,
+  );
+
+  assert.equal(context.logs.filter((line) => line.includes("Failed:")).length, 0);
 });

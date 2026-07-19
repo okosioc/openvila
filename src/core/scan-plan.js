@@ -1,6 +1,5 @@
 import path from "node:path";
 import ignore from "ignore";
-import YAML from "yaml";
 import {
   discoverDatabaseTargets,
   listDatabaseTableColumns,
@@ -33,8 +32,6 @@ const KNOWLEDGE_EXTENSIONS = [
   ".xml",
   ".astro",
 ];
-
-const SCAN_PLAN_VERSION = 1;
 
 function unique(values) {
   return [...new Set(values.filter((value) => typeof value === "string" && value.trim().length > 0))];
@@ -94,11 +91,58 @@ export async function loadKnowledgeScanPlan(cwd) {
   if (raw === null) {
     return null;
   }
-  const parsed = YAML.parse(raw);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`Invalid scan plan: ${planPath}`);
+  return parseKnowledgeScanPlan(raw, planPath);
+}
+
+export function parseKnowledgeScanPlan(raw, planPath = "") {
+  const files = [];
+  const databasesByUrl = new Map();
+  const lines = String(raw ?? "").split(/\r?\n/);
+
+  for (const [index, rawLine] of lines.entries()) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+    if (line.startsWith("file://")) {
+      const filePattern = line.slice("file://".length).trim();
+      if (filePattern) {
+        files.push(filePattern);
+        continue;
+      }
+    } else {
+      const separator = line.lastIndexOf("::");
+      const connectionUrl = line.slice(0, separator).trim();
+      const tableName = line.slice(separator + 2).trim();
+      if (separator > 0 && connectionUrl && tableName) {
+        if (!databasesByUrl.has(connectionUrl)) {
+          databasesByUrl.set(connectionUrl, { connection_url: connectionUrl, tables: [] });
+        }
+        databasesByUrl.get(connectionUrl).tables.push(tableName);
+        continue;
+      }
+    }
+    throw new Error(`Invalid scan plan line ${index + 1}${planPath ? `: ${planPath}` : ""}`);
   }
-  return parsed;
+
+  const databases = [...databasesByUrl.values()].map((entry) => ({ ...entry, tables: unique(entry.tables) }));
+  return {
+    files: unique(files),
+    ...(databases.length === 1 ? { database: databases[0] } : databases.length > 1 ? { databases } : {}),
+  };
+}
+
+export function stringifyKnowledgeScanPlan(plan) {
+  const fileLines = unique(toArray(plan?.files)).map((filePattern) => `file://${filePattern}`);
+  const databaseLines = scanPlanDatabaseEntries(plan).flatMap((entry) => {
+    const connectionUrl = String(entry?.connection_url || "").trim();
+    if (!connectionUrl) {
+      return [];
+    }
+    return unique(toArray(entry.tables)).map((tableName) => `${connectionUrl}::${tableName}`);
+  });
+  const lines = [...fileLines, ...databaseLines];
+  return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
 export async function saveKnowledgeScanPlan(cwd, plan) {
@@ -107,7 +151,7 @@ export async function saveKnowledgeScanPlan(cwd, plan) {
     return null;
   }
   const planPath = runtimePaths(cwd).scanPlan;
-  await writeText(planPath, YAML.stringify(generatedPlan));
+  await writeText(planPath, stringifyKnowledgeScanPlan(generatedPlan));
   return planPath;
 }
 
@@ -197,10 +241,6 @@ function queryTargetBase(target, engine) {
   return parts.join("_") || engine;
 }
 
-function tableCandidateKey(targetKey, tableName) {
-  return `${targetKey}::${tableName}`;
-}
-
 function scanPlanDatabaseEntries(scanPlan) {
   const entries = [];
   if (scanPlan?.database && typeof scanPlan.database === "object" && !Array.isArray(scanPlan.database)) {
@@ -215,7 +255,8 @@ function scanPlanDatabaseEntries(scanPlan) {
 export function emptyDatabasePlan() {
   return {
     queries: [],
-    auto_discovery: {
+    selected_table_keys: [],
+    discovery: {
       database_count: 0,
       table_count: 0,
       selected_tables: 0,
@@ -235,6 +276,7 @@ export function emptyDatabasePlan() {
 
 export function databasePlanFromScanPlan(cwd, config, scanPlan) {
   const queries = [];
+  const selectedTableKeys = [];
   const byEngine = {
     sqlite: 0,
     mysql: 0,
@@ -249,7 +291,7 @@ export function databasePlanFromScanPlan(cwd, config, scanPlan) {
       continue;
     }
     byEngine[target.engine] = (byEngine[target.engine] || 0) + 1;
-    const limit = clampInt(entry.limit, 1, 300, clampInt(config?.scan?.db_auto_query_limit, 1, 300, 80));
+    const limit = clampInt(config?.scan?.db_auto_query_limit, 1, 300, 80);
     const tableNames = unique(toArray(entry.tables).map((tableName) => String(tableName || "").trim()));
     for (const tableName of tableNames) {
       const targetBase = queryTargetBase(target, target.engine);
@@ -267,12 +309,14 @@ export function databasePlanFromScanPlan(cwd, config, scanPlan) {
         query,
         limit,
       });
+      selectedTableKeys.push(`${target.key}::${tableName}`);
     }
   }
 
   return {
     queries,
-    auto_discovery: {
+    selected_table_keys: selectedTableKeys,
+    discovery: {
       database_count: databaseEntries.length,
       table_count: queries.length,
       candidate_tables: queries.length,
@@ -302,7 +346,7 @@ export async function collectAutoDatabaseCandidates(cwd, config) {
     for (const tableName of tables) {
       const columns = await listDatabaseTableColumns(target, tableName).catch(() => []);
       tableCandidates.push({
-        key: tableCandidateKey(target.key, tableName),
+        key: `${target.key}::${tableName}`,
         engine: target.engine,
         target_key: target.key,
         target_label: target.label,
@@ -321,31 +365,31 @@ export async function collectAutoDatabaseCandidates(cwd, config) {
 
   return {
     table_candidates: tableCandidates,
-    auto_discovery: {
+    discovery: {
       database_count: targets.length,
       table_count: totalTables,
       candidate_tables: tableCandidates.length,
       discovered_files: discovered.discovered_files || [],
       mentioned_tokens: discovered.mentioned_tokens || [],
       unresolved_tokens: discovered.unresolved_tokens || [],
-      by_engine: discovered.by_engine || emptyDatabasePlan().auto_discovery.by_engine,
+      by_engine: discovered.by_engine || emptyDatabasePlan().discovery.by_engine,
     },
   };
 }
 
-export function buildAutoDatabasePlan(config, knowledgeTables = [], autoDbCandidates = null) {
+export function buildAutoDatabasePlan(config, selectedTableKeys = [], autoDbCandidates = null) {
   const candidateBundle = autoDbCandidates || {
     table_candidates: [],
-    auto_discovery: emptyDatabasePlan().auto_discovery,
+    discovery: emptyDatabasePlan().discovery,
   };
   const tableCandidates = Array.isArray(candidateBundle.table_candidates) ? candidateBundle.table_candidates : [];
-  const selectedTableKeys = new Set(unique(toArray(knowledgeTables).map((item) => String(item || "").trim())));
+  const selectedKeySet = new Set(unique(toArray(selectedTableKeys).map((item) => String(item || "").trim())));
   const maxTables = clampInt(config?.scan?.db_auto_max_tables, 1, 40, 6);
   const limit = clampInt(config?.scan?.db_auto_query_limit, 1, 300, 80);
-  const queries = tableCandidates
-    .filter((item) => selectedTableKeys.has(item.key))
-    .slice(0, maxTables)
-    .map((item) => {
+  const selectedCandidates = tableCandidates
+    .filter((item) => selectedKeySet.has(item.key))
+    .slice(0, maxTables);
+  const queries = selectedCandidates.map((item) => {
       const targetBase = queryTargetBase(item.target, item.engine);
       const name = sanitizeQueryName(`auto_${item.engine}_${targetBase}_${item.table_name}`);
       const query =
@@ -365,8 +409,9 @@ export function buildAutoDatabasePlan(config, knowledgeTables = [], autoDbCandid
 
   return {
     queries,
-    auto_discovery: {
-      ...(candidateBundle.auto_discovery || emptyDatabasePlan().auto_discovery),
+    selected_table_keys: selectedCandidates.map((item) => item.key),
+    discovery: {
+      ...(candidateBundle.discovery || emptyDatabasePlan().discovery),
       selected_tables: queries.length,
     },
   };
@@ -381,13 +426,7 @@ function generatedDatabasePlan(queries) {
     const target = query.target;
     const key = String(target.key || `${query.engine}:${query.target_label || query.name}`);
     if (!entriesByTarget.has(key)) {
-      const entry = { engine: query.engine, tables: [], limit: query.limit };
-      if (target.connection_url) {
-        entry.connection_url = target.connection_url;
-      }
-      if (target.sqlite_path) {
-        entry.sqlite_path = target.sqlite_path;
-      }
+      const entry = { connection_url: target.connection_url, tables: [] };
       entriesByTarget.set(key, entry);
     }
     entriesByTarget.get(key).tables.push(query.table_name);
@@ -402,7 +441,6 @@ function generatedDatabasePlan(queries) {
 
 export function generatedScanPlan(filesystem, database) {
   return {
-    version: SCAN_PLAN_VERSION,
     files: filesystem.matched_paths,
     ...generatedDatabasePlan(database?.queries || []),
   };

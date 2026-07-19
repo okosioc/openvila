@@ -31,12 +31,8 @@ function toPositiveInt(value, fallback) {
   return Math.floor(parsed);
 }
 
-function lowerNoProto(urlText) {
+function normalizeTargetKey(urlText) {
   return String(urlText || "").toLowerCase().replace(/\/$/, "");
-}
-
-function isLikelySqlitePath(value) {
-  return /\.(db|sqlite|sqlite3)$/i.test(String(value || "").trim());
 }
 
 export function normalizeDatabaseEngine(value) {
@@ -137,14 +133,20 @@ function toSqliteLabel(cwd, dbPath) {
   return dbPath;
 }
 
+function sqliteConnectionUrl(sqlitePath) {
+  const normalizedPath = toPosixPath(String(sqlitePath || "").trim()).replace(/^\.\//, "");
+  return `sqlite://${normalizedPath}`;
+}
+
 function buildSqliteTarget(cwd, sqlitePath) {
   const dbPath = path.isAbsolute(sqlitePath) ? sqlitePath : path.join(cwd, sqlitePath);
   const labelPath = toSqliteLabel(cwd, dbPath);
   return {
     engine: "sqlite",
+    connection_url: sqliteConnectionUrl(labelPath),
     sqlite_path: labelPath,
     db_path: dbPath,
-    key: `sqlite:${labelPath.toLowerCase()}`,
+    key: normalizeTargetKey(sqliteConnectionUrl(labelPath)),
     label: `sqlite:${labelPath}`,
   };
 }
@@ -154,7 +156,7 @@ function buildNetworkTargetFromUrl(engine, connectionUrl) {
   return {
     engine,
     connection_url: connectionUrl,
-    key: `${engine}:${lowerNoProto(masked)}`,
+    key: normalizeTargetKey(masked),
     label: masked,
   };
 }
@@ -172,17 +174,20 @@ function buildNetworkTargetFromFields(engine, raw) {
     return null;
   }
 
-  const auth = user ? `${user}@` : "";
-  const label = `${engine}://${auth}${host}:${port}/${database}`;
+  const auth = user ? `${encodeURIComponent(user)}${password ? `:${encodeURIComponent(password)}` : ""}@` : "";
+  const connectionUrl = `${engine}://${auth}${host}:${port}/${encodeURIComponent(database)}`;
+  const labelAuth = user ? `${user}@` : "";
+  const label = `${engine}://${labelAuth}${host}:${port}/${database}`;
 
   return {
     engine,
+    connection_url: connectionUrl,
     host,
     port,
     user,
     password,
     database,
-    key: `${engine}:${label.toLowerCase()}`,
+    key: normalizeTargetKey(label),
     label,
   };
 }
@@ -208,16 +213,6 @@ export function resolveDatabaseTarget(cwd, rawTarget) {
         return buildSqliteTarget(cwd, sqlitePathFromUrl);
       }
     }
-  }
-
-  const sqlitePath = cleanToken(rawTarget.sqlite_path || "");
-  if (sqlitePath && (explicitEngine === "sqlite" || !explicitEngine || isLikelySqlitePath(sqlitePath))) {
-    return buildSqliteTarget(cwd, sqlitePath);
-  }
-
-  const databaseField = cleanToken(rawTarget.database || "");
-  if (databaseField && !explicitEngine && isLikelySqlitePath(databaseField)) {
-    return buildSqliteTarget(cwd, databaseField);
   }
 
   if (explicitEngine === "mysql" || explicitEngine === "postgresql" || explicitEngine === "mongodb") {
@@ -665,7 +660,7 @@ export async function discoverDatabaseTargets(cwd, options = {}) {
   }
 
   for (const sqlitePath of sqliteDiscovery.paths || []) {
-    addTarget({ engine: "sqlite", sqlite_path: sqlitePath });
+    addTarget({ engine: "sqlite", connection_url: sqliteConnectionUrl(sqlitePath) });
   }
 
   const sourceFiles = await listFilesRecursive(cwd, {
