@@ -314,7 +314,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     return {
       generated_at: new Date().toISOString(),
       planning_mode: "plan",
-      framework: "scan-plan",
+      framework: "unknown",
       framework_signals: [],
       llm_model: "",
       filesystem,
@@ -1149,6 +1149,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     .sort((a, b) => String(a[1]?.doc_path || "").localeCompare(String(b[1]?.doc_path || "")))
     .map(([source]) => source);
   const frequentSources = allSourcesOrder.filter((source) => Boolean(finalIndexMap[source]?.is_frequently_asked));
+  const filePlanningCalls = plan.planning_mode === "auto" ? 1 : 0;
 
   const manifest = {
     generated_at: nowIso,
@@ -1169,9 +1170,9 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       frequent_doc_count: frequentSources.length,
     },
     llm_calls: {
-      file_planning: 1,
+      file_planning: filePlanningCalls,
       doc_compile_batches: docCompileBatchCount,
-      total: 1 + docCompileBatchCount,
+      total: filePlanningCalls + docCompileBatchCount,
       doc_compile_batch_chars: compileConfig(config).batchChars,
     },
     source_hashes: currentSourceHashes,

@@ -120,7 +120,7 @@ On the first scan (and with `--reset`), the confirmation prompt accepts `e` to e
 ```text
 file://www/templates/public/terms-of-service.html
 file://www/templates/public/contact.html
-file://www/posts/**
+file://www/posts/*.md
 mongodb://localhost:27017/demo::posts
 ```
 
@@ -132,7 +132,9 @@ Each non-empty line is one scan source:
 The initial plan contains exact LLM-selected file paths. To include future files automatically, manually add a file glob:
 
 - `file://www/posts/*`: matches files directly inside `www/posts/`.
+- `file://www/posts/*.md`: matches Markdown files directly inside `www/posts/`.
 - `file://www/posts/**`: matches files inside `www/posts/` and every nested directory.
+- `file://www/posts/**/*.md`: matches Markdown files inside `www/posts/` and every nested directory.
 
 Patterns still respect `.gitignore` and supported text-file extensions. Use `*` for one path segment and `**` for recursive directories; OpenVila never adds these patterns automatically.
 
@@ -367,3 +369,5 @@ To release, update `package.json` to the target version, commit the change, then
 ## TODO
 
 - Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
+- Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
+- For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.

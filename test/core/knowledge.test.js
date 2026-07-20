@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -6,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import sqlite3 from "sqlite3";
-import { prepareKnowledgeScanPlan, saveKnowledgeScanPlan } from "../../src/core/knowledge.js";
+import { buildKnowledgeBase, prepareKnowledgeScanPlan, saveKnowledgeScanPlan } from "../../src/core/knowledge.js";
 import { defaultConfig } from "../../src/core/runtime.js";
 import { collectAutoDatabaseCandidates, generatedScanPlan, parseKnowledgeScanPlan, stringifyKnowledgeScanPlan } from "../../src/core/scan-plan.js";
 import { resolveDatabaseTarget } from "../../src/utils/db.js";
@@ -170,6 +171,7 @@ test("prepareKnowledgeScanPlan uses an editable scan plan without LLM planning",
   const plan = await prepareKnowledgeScanPlan(cwd, { config: { scan: { db_auto_query_limit: 12 } } });
 
   assert.equal(plan.planning_mode, "plan");
+  assert.equal(plan.framework, "unknown");
   assert.equal(plan.llm_model, "");
   assert.equal("llm_assist" in plan.filesystem, false);
   assert.deepEqual(plan.filesystem.matched_paths, ["docs/guide.md", "www/posts/first.html", "www/posts/second.md"]);
@@ -177,6 +179,58 @@ test("prepareKnowledgeScanPlan uses an editable scan plan without LLM planning",
   assert.deepEqual(plan.database.selected_table_keys, ["sqlite://data/site.db::posts"]);
   assert.equal(plan.database.queries[0].limit, 12);
   assert.equal(plan.database.queries[0].target.connection_url, "sqlite://data/site.db");
+});
+
+test("buildKnowledgeBase records no planning call when reusing an unchanged scan plan", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  context.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const content = "<h1>FAQ</h1>";
+  const sourceHash = crypto.createHash("sha1").update(`filesystem\nfaq.html\n${content}`).digest("hex");
+  const knowledges = path.join(cwd, ".openvila", "knowledges");
+
+  await fs.mkdir(path.join(knowledges, "docs"), { recursive: true });
+  await Promise.all([
+    fs.writeFile(path.join(cwd, "faq.html"), content),
+    fs.writeFile(path.join(cwd, ".openvila", "config.yaml"), "language: en\n"),
+    fs.writeFile(path.join(knowledges, "docs", "fs-faq-html.md"), "# FAQ\n"),
+    fs.writeFile(
+      path.join(knowledges, "manifest.json"),
+      `${JSON.stringify({
+        source_hashes: { "faq.html": sourceHash },
+        source_doc_map: { "faq.html": "docs/fs-faq-html.md" },
+        index_map: {
+          "faq.html": {
+            doc_path: "docs/fs-faq-html.md",
+            title: "FAQ",
+            summary: "Frequently asked questions.",
+            tags: ["faq"],
+            updated_at: "2026-01-01T00:00:00.000Z",
+            is_frequently_asked: false,
+          },
+        },
+      }, null, 2)}\n`,
+    ),
+  ]);
+
+  const result = await buildKnowledgeBase(cwd, {
+    config: { scan: {} },
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: ["faq.html"] },
+      database: { queries: [] },
+      remote: { enabled: false },
+    },
+  });
+
+  assert.equal(result.compiled, 0);
+  assert.deepEqual(result.llm_calls, {
+    file_planning: 0,
+    doc_compile_batches: 0,
+    total: 0,
+    doc_compile_batch_chars: 100000,
+  });
 });
 
 test("prepareKnowledgeScanPlan previews an in-memory edited scan plan", async (context) => {

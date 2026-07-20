@@ -59,19 +59,20 @@ function renderDatabaseQueries(plan, locale) {
 
 function renderScanPlan(ctx, plan) {
   const planningMode = plan.planning_mode === "plan" ? "plan" : "auto";
-  const llmModel = String(plan.llm_model || "");
   const editedDraft = planningMode === "plan" && Boolean(plan.generated_scan_plan);
   const selectedTableKeys = plan.database.selected_table_keys || [];
   const databaseDiscovery = plan.database.discovery || {};
+  const framework = plan.framework || "unknown";
+  const frameworkSignals = (plan.framework_signals || []).join(", ") || "none";
   const analysisHeading = pick(
     ctx.locale,
     planningMode === "auto"
-      ? "[scan] 1/6 LLM分析结果（框架识别 + 知识文件和数据表识别）"
+      ? `[scan] 1/6 LLM分析结果（框架: ${framework}；识别信号: ${frameworkSignals}）`
       : editedDraft
         ? "[scan] 1/6 Scan Plan（编辑后的草稿范围）"
         : "[scan] 1/6 Scan Plan（读取已确认的扫描范围）",
     planningMode === "auto"
-      ? "[scan] 1/6 LLM Analysis Result (framework + knowledge files and tables)"
+      ? `[scan] 1/6 LLM Analysis Result (framework: ${framework}; signals: ${frameworkSignals})`
       : editedDraft
         ? "[scan] 1/6 Scan Plan (edited draft scope)"
         : "[scan] 1/6 Scan Plan (using confirmed scan scope)",
@@ -81,10 +82,7 @@ function renderScanPlan(ctx, plan) {
     ctx.locale,
     [
       analysisHeading,
-      `- framework: ${plan.framework || "unknown"}`,
-      `- 识别信号: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- 规划模式: ${planningMode}`,
-      `- LLM模型: ${llmModel || "未调用（使用 scan plan）"}`,
       `- 文件选择: ${plan.filesystem.matched_paths.length} / ${plan.filesystem.total_candidates}`,
       `- 数据表选择: ${selectedTableKeys.length} / ${databaseDiscovery.candidate_tables ?? 0}`,
       "",
@@ -95,10 +93,7 @@ function renderScanPlan(ctx, plan) {
     ].join("\n"),
     [
       analysisHeading,
-      `- framework: ${plan.framework || "unknown"}`,
-      `- signals: ${(plan.framework_signals || []).join(", ") || "none"}`,
       `- planning mode: ${planningMode}`,
-      `- LLM model: ${llmModel || "not used (scan plan)"}`,
       `- selected knowledge files: ${plan.filesystem.matched_paths.length} from ${plan.filesystem.total_candidates}`,
       `- selected database tables: ${selectedTableKeys.length} / ${databaseDiscovery.candidate_tables ?? 0}`,
       "",

@@ -89,9 +89,33 @@ test("runScan previews a plan without writing knowledge files in dry-run mode", 
 
   assert.equal(buildCalled, false);
   assert.equal(saveCalled, false);
+  assert.ok(context.logs.some((line) => line.includes("LLM Analysis Result (framework: static; signals: index.html)")));
   assert.ok(context.logs.some((line) => line.includes("Scan Scope To Confirm")));
   assert.ok(context.logs.some((line) => line.includes("file list (1 / 2):\n  faq.html")));
   assert.ok(context.logs.some((line) => line.includes("dry-run completed")));
+});
+
+test("runScan hides framework details when reusing a scan plan", async () => {
+  const context = createContext();
+  const plan = createPlan({
+    planning_mode: "plan",
+    framework: "unknown",
+    framework_signals: [],
+    llm_model: "",
+  });
+
+  await runScan(
+    context,
+    { options: { "dry-run": true } },
+    {
+      loadConfig: async () => ({ scan: {} }),
+      prepareKnowledgeScanPlan: async () => plan,
+    },
+  );
+
+  const scanLog = context.logs.find((line) => line.includes("Scan Plan (using confirmed scan scope)"));
+  assert.match(scanLog, /planning mode: plan/);
+  assert.doesNotMatch(scanLog, /framework:|signals:/);
 });
 
 test("runScan limits matched file paths in scan plan logs", async () => {
