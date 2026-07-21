@@ -19,14 +19,11 @@ const URL_PATTERN = /(https?:\/\/[^\s]+)/g;
 
 function commandSuggestions(locale) {
   return [
-    { cmd: "/init", desc: pick(locale, "初始化运行目录", "initialize runtime directory") },
     { cmd: "/scan", desc: pick(locale, "扫描并编译知识库", "scan and compile knowledge") },
     { cmd: "/scan --dry-run", desc: pick(locale, "预览扫描计划，不写入知识库", "preview scan plan without writing knowledge") },
     { cmd: "/scan --reset", desc: pick(locale, "重建扫描计划并完整重建知识库", "regenerate scan plan and fully rebuild knowledge") },
     { cmd: "/scan --no-db", desc: pick(locale, "跳过数据库规划和查询", "skip database planning and queries") },
     { cmd: "/scan --no-remote", desc: pick(locale, "跳过 sitemap 规划和抓取", "skip sitemap planning and crawling") },
-    { cmd: "/install", desc: pick(locale, "生成 widget 预览", "generate widget preview") },
-    { cmd: "/install --apply", desc: pick(locale, "注入 widget 到页面", "inject widget into page") },
     { cmd: "/action list", desc: pick(locale, "查看 actions", "list actions") },
     { cmd: "/action create <name>", desc: pick(locale, "创建 action", "create action") },
     { cmd: "/action pending", desc: pick(locale, "查看待审批请求", "list pending requests") },
@@ -57,13 +54,13 @@ function hyperlinkUrlsForTerminal(text) {
 function statusText(locale, ready) {
   return ready
     ? pick(locale, "initialized", "initialized")
-    : pick(locale, "not initialized (run /init)", "not initialized (run /init)");
+    : pick(locale, "not initialized", "not initialized");
 }
 
 function helpLines(locale) {
   return [
     pick(locale, "commands (prefix with /):", "commands (prefix with /):"),
-    "  /init /scan /install /action ... /vila ... /channel ... /run",
+    "  /scan /action ... /vila ... /channel ... /run",
     "  /help /exit",
   ];
 }
@@ -211,9 +208,6 @@ function ManagerApp({ ctx, executeTokens, version, onExit }) {
     (async () => {
       const ready = await isRuntimeInitialized(ctx.cwd).catch(() => false);
       setRuntimeReady(Boolean(ready));
-      if (!ready) {
-        appendLog(pick(ctx.locale, "未发现 .openvila/，请先执行 /init", "No .openvila/ found. Run /init first"));
-      }
       appendLog(pick(ctx.locale, "openvila manager ready. use /help", "openvila manager ready. use /help"));
     })().catch(() => undefined);
   }, [appendLog, ctx.cwd, ctx.locale]);

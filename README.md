@@ -3,7 +3,7 @@
 OpenVila is a local REPL tool for independent site owners.
 It supports:
 - scanning website content into a markdown knowledge base
-- installing a chat widget
+- serving a chat widget
 - creating and approving owner-only actions
 - managing vilas
 - configuring owner channels (Telegram/Feishu)
@@ -28,16 +28,16 @@ In the Ink manager UI, use the keyboard to manage OpenVila:
 - header: ASCII logo + version + runtime status
 - bottom line: input prompt for text and commands
 - press Enter: submit input and show response/logs
-- commands must start with `/`, for example `/init`, `/scan`, `/install --apply`
+- commands must start with `/`, for example `/scan`, `/run`
 - when input starts with `/`, the UI shows command suggestions in real time
 - quit with `/exit` or `Ctrl+C`
 
-You can still run direct commands:
+For a new project, first launch `openvila` (or `openvila ui`) and confirm creation of `.openvila/`. Direct commands such as `openvila scan` and `openvila run` exit with an error until the manager has initialized the directory.
+
+After that, you can run direct commands:
 
 ```bash
-openvila init
 openvila scan
-openvila install --apply
 openvila run
 ```
 
@@ -50,21 +50,17 @@ npm install
 npm link
 ```
 
-Then in any target website directory (including demos):
+In any new target website directory (including demos), first run `openvila` and confirm creation of `.openvila/`. Then run:
 
 ```bash
-openvila init
 openvila scan
-openvila install --apply
 openvila run
 ```
 
 If you do not want `npm link`, run from this repo root with explicit path:
 
 ```bash
-node src/index.js init
 node src/index.js scan
-node src/index.js install --apply
 node src/index.js run
 ```
 
@@ -72,9 +68,7 @@ node src/index.js run
 
 ```bash
 /ui
-/init [--force]
 /scan [--yes] [--dry-run] [--reset] [--no-filesystem] [--no-db] [--no-remote]
-/install [--apply] [--all] [--attach-start]
 /action list
 /action create do_complaint
 /action test do_complaint --payload '{"url":"/page/123"}'
@@ -89,7 +83,6 @@ node src/index.js run
 Direct command mode is also supported:
 
 ```bash
-openvila init
 openvila scan
 openvila run
 ```
@@ -199,7 +192,7 @@ After `/run` starts the local chat service, the widget provides a session-scoped
 
 ### Widget
 
-`/run` refreshes the preview assets and serves a live preview at `http://127.0.0.1:<port>/widget`. Open that page to inspect the widget and copy an embed snippet; `/install --apply` is available when you want OpenVila to inject the widget script into a website page.
+`/run` refreshes the preview assets and serves a live preview at `http://127.0.0.1:<port>/widget`. Open that page to inspect the widget and copy its embed snippet into your website manually.
 
 For a local website on another port, load the script from `/run` directly:
 
@@ -280,7 +273,7 @@ Human-takeover events and Telegram long-polling input logs are written to `.open
 
 ## Runtime Directory
 
-`/init` creates runtime files under the current website directory:
+On first UI launch, OpenVila asks for confirmation, then creates runtime files in the current website directory. Standalone commands such as `scan` and `run` require these files to exist:
 
 ```text
 my-website/
@@ -379,7 +372,7 @@ You can view configured channels with `openvila channel list` and remove one wit
 
 ## Demos
 
-The `demos/` directory contains five local websites for testing scanning, widget installation, and chat. Every demo includes User Agreement, Pricing, FAQ, and Privacy Policy pages.
+The `demos/` directory contains five local websites for testing scanning, widget preview, and chat. Every demo includes User Agreement, Pricing, FAQ, and Privacy Policy pages.
 
 Before testing a demo, install and link the local CLI from the repository root:
 
@@ -388,14 +381,14 @@ npm install
 npm link
 ```
 
-Start the selected website in one terminal. In another terminal, run OpenVila from that demo directory:
+Start the selected website in one terminal. In another terminal, first run `openvila` from that demo directory and confirm initialization. After exiting the manager, run:
 
 ```bash
-openvila init
 openvila scan
-openvila install --apply
 openvila run
 ```
+
+Open `http://127.0.0.1:9394/widget` and manually copy the preview page's embed snippet into the demo page you want to test.
 
 If you do not use `npm link`, replace `openvila` with `node ../../src/index.js` in each demo directory. `/scan` requires the LLM configuration described above.
 

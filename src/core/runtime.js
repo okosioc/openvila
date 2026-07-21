@@ -90,9 +90,6 @@ export function defaultConfig() {
       port: 9394,
       owner_token: generateOwnerToken(),
     },
-    install: {
-      conservative: true,
-    },
   };
 }
 
@@ -142,7 +139,7 @@ export function resolveLlmSettings(config, env = {}) {
 }
 
 function notInitializedError() {
-  return "OpenVila runtime is not initialized in this directory. Run /init first.";
+  return "OpenVila runtime is not initialized in this directory.";
 }
 
 async function ensureRuntimeDirectories(paths) {

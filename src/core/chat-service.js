@@ -1251,7 +1251,7 @@ export async function startChatService(cwd, config, options = {}) {
       }
 
       if (req.method === "GET" && url.pathname === "/widget") {
-        const content = (await readTextSafe(paths.widget)) || "<h1>Widget not installed. Run /install first.</h1>";
+        const content = (await readTextSafe(paths.widget)) || "<h1>Widget preview is unavailable. Run /run first.</h1>";
         const serviceHost = String(req.headers.host || `127.0.0.1:${port}`);
         const serviceUrl = new URL(`http://${serviceHost}`);
         const widgetUrl = new URL("/openvila/widget.js", serviceUrl);
@@ -1271,7 +1271,7 @@ export async function startChatService(cwd, config, options = {}) {
 
       if (req.method === "GET" && url.pathname === "/openvila/widget.js") {
         if (!(await exists(paths.widgetScript))) {
-          sendText(res, 404, "Widget script not found. Run /install first.\n");
+          sendText(res, 404, "Widget script not found. Run /run first.\n");
           return;
         }
         const js = await fs.readFile(paths.widgetScript, "utf8");

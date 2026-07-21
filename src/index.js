@@ -4,8 +4,6 @@ import process from "node:process";
 import readline from "node:readline";
 import { runActionCommand } from "./commands/action.js";
 import { runChannel } from "./commands/channel.js";
-import { runInit } from "./commands/init.js";
-import { runInstall } from "./commands/install.js";
 import { runRun } from "./commands/run.js";
 import { runScan } from "./commands/scan.js";
 import { runUi } from "./commands/ui.js";
@@ -24,7 +22,7 @@ import { normalizeCommandName, parseOptionArgs, splitArgs } from "./utils/args.j
 import { exists } from "./utils/fs.js";
 import { cliVersion } from "./utils/version.js";
 
-const COMMANDS_NEED_INIT = new Set(["scan", "install", "action", "vila", "channel", "run"]);
+const COMMANDS_NEED_RUNTIME = new Set(["scan", "action", "vila", "channel", "run"]);
 
 function helpText(locale) {
   return pick(
@@ -34,10 +32,7 @@ function helpText(locale) {
       "",
       "命令:",
       "  /ui                         进入 Ink 交互管理终端",
-      "  /init [--force]             初始化 .openvila 运行目录",
       "  /scan                       扫描并编译知识库",
-      "  /install [--apply] [--all] [--attach-start]",
-      "                              安装 widget（默认保守策略）",
       "  /action ...                 管理动作脚本",
       "  /vila ...                   安装/管理精灵",
       "  /channel ...                配置 Telegram/飞书",
@@ -52,10 +47,7 @@ function helpText(locale) {
       "",
       "Commands:",
       "  /ui                         Open Ink interactive manager",
-      "  /init [--force]             Initialize .openvila runtime directory",
       "  /scan                       Scan and compile knowledge base",
-      "  /install [--apply] [--all] [--attach-start]",
-      "                              Install widget (conservative by default)",
       "  /action ...                 Manage actions",
       "  /vila ...                   Manage vilas",
       "  /channel ...                Configure Telegram/Feishu",
@@ -92,19 +84,19 @@ async function createContext(cwd) {
   };
 }
 
-function notInitializedMessage(locale) {
-  return pick(
-    locale,
-    "当前目录尚未初始化 OpenVila。请先执行 /init。",
-    "OpenVila is not initialized in this directory. Run /init first.",
-  );
-}
-
 function missingRuntimeDirMessage(locale) {
   return pick(
     locale,
     "当前目录未发现 .openvila/ 运行目录。",
     "No .openvila/ runtime directory found in current path.",
+  );
+}
+
+function uiRequiredMessage(locale) {
+  return pick(
+    locale,
+    "当前目录尚未初始化 OpenVila。请先运行 openvila 进入管理界面。",
+    "OpenVila is not initialized in this directory. Run openvila to open the manager first.",
   );
 }
 
@@ -402,29 +394,8 @@ async function executeCommand(ctx, tokens) {
     return true;
   }
 
-  if (command === "init") {
-    await runInit(ctx, argv);
-    try {
-      const config = await loadConfig(ctx.cwd, { createIfMissing: false });
-      ctx.locale = config.language || ctx.locale;
-    } catch {
-      // Ignore locale refresh errors.
-    }
-    return true;
-  }
-
-  if (COMMANDS_NEED_INIT.has(command) && !(await isRuntimeInitialized(ctx.cwd))) {
-    ctx.log(notInitializedMessage(ctx.locale));
-    return true;
-  }
-
   if (command === "scan") {
     await runScan(ctx, argv);
-    return true;
-  }
-
-  if (command === "install") {
-    await runInstall(ctx, argv);
     return true;
   }
 
@@ -525,14 +496,26 @@ async function runFallbackRepl(ctx) {
 async function main() {
   const cwd = process.cwd();
   const ctx = await createContext(cwd);
-  const canContinue = await runStartupChecks(ctx);
-  if (!canContinue) {
-    setGlobalLogWriter(null);
+  const rawArgs = process.argv.slice(2);
+  const command = normalizeCommandName(rawArgs[0]);
+  const opensUi = rawArgs.length === 0 || command === "ui" || command === "cli";
+  const initialized = await isRuntimeInitialized(cwd);
+
+  if (!initialized && !opensUi && COMMANDS_NEED_RUNTIME.has(command)) {
+    ctx.log(uiRequiredMessage(ctx.locale));
+    process.exitCode = 1;
     return;
   }
-  await enableRuntimeLogging(ctx);
 
-  const rawArgs = process.argv.slice(2);
+  if (initialized || opensUi) {
+    const canContinue = await runStartupChecks(ctx);
+    if (!canContinue) {
+      setGlobalLogWriter(null);
+      return;
+    }
+    await enableRuntimeLogging(ctx);
+  }
+
   if (rawArgs.length === 0) {
     try {
       if (process.stdin.isTTY && process.stdout.isTTY) {
