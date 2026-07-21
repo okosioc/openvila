@@ -3,6 +3,10 @@
   "version": "0.2.1",
   "description": "OpenVila CLI for independent site owners",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/okosioc/openvila"
+  },
   "files": [
     "src",
     "README.md",
