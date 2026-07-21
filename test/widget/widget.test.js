@@ -128,7 +128,7 @@ function createWidgetHarness(options = {}) {
 
   const fetch = async (url, request = {}) => {
     fetchCalls.push({ url, request });
-    if (String(url).includes("/chat/history")) {
+    if (String(url).includes("/openvila/chat/history")) {
       return {
         ok: true,
         json: async () => ({ messages: [] }),
@@ -158,6 +158,9 @@ function createWidgetHarness(options = {}) {
       hostname: "127.0.0.1",
       protocol: "http:",
       href: "http://127.0.0.1/",
+    },
+    navigator: {
+      language: options.visitorLocale || "en-US",
     },
   };
 
@@ -234,6 +237,33 @@ test("widget query color overrides the script attribute", async () => {
   assert.equal(submit.style.background, "#be123c");
 });
 
+test("widget sends the visitor browser language for welcome selection", async () => {
+  const harness = await loadWidget({ visitorLocale: "zh-CN" });
+  const historyCall = harness.fetchCalls.find((call) => String(call.url).includes("/openvila/chat/history"));
+  const form = harness.document.getElementById("openvila-form");
+  const input = harness.document.getElementById("openvila-input");
+
+  assert.match(String(historyCall.url), /locale=zh-CN/);
+  input.value = "你好";
+  await form.emit("submit", submitEvent());
+
+  const postCall = harness.fetchCalls.find((call) => String(call.url).endsWith("/openvila/chat"));
+  assert.equal(JSON.parse(postCall.request.body).locale, "zh-CN");
+});
+
+test("widget localizes system labels for Chinese visitors", async () => {
+  const harness = await loadWidget({ visitorLocale: "zh-CN" });
+  const eventSource = harness.eventSources[0];
+
+  eventSource.emit("message", {
+    data: JSON.stringify({ id: "handoff-started", role: "handoff", content: "人工客服已接入。" }),
+  });
+
+  const message = harness.document.getElementById("openvila-messages").children.at(-1);
+  assert.equal(message.children[0].textContent, "系统");
+  assert.equal(message.children[1].textContent, "人工客服已接入。");
+});
+
 test("widget close button hides the panel and closes the event stream", async () => {
   const harness = await loadWidget();
   const panel = harness.document.getElementById("openvila-panel");
@@ -260,7 +290,7 @@ test("widget renders streamed replies once and unlocks after the completed messa
   assert.equal(input.disabled, true);
   assert.equal(submit.disabled, true);
   assert.equal(submit.textContent, "Waiting...");
-  assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/chat")).length, 1);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/openvila/chat")).length, 1);
 
   eventSource.emit("delta", {
     data: JSON.stringify({

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { startChatService } from "../../src/core/chat-service.js";
+import { ensureWidgetPreview } from "../../src/core/install.js";
 import { createRuntimeFileLogger, setGlobalLogWriter } from "../../src/core/logging.js";
 import { defaultConfig, initializeRuntime, runtimePaths } from "../../src/core/runtime.js";
 
@@ -99,7 +100,7 @@ async function createStreamingLlm() {
 
 async function openChatEvents(baseUrl, sessionId) {
   const controller = new AbortController();
-  const response = await fetch(`${baseUrl}/chat/events?session_id=${sessionId}`, {
+  const response = await fetch(`${baseUrl}/openvila/chat/events?session_id=${sessionId}`, {
     headers: { Connection: "close" },
     signal: controller.signal,
   });
@@ -207,6 +208,9 @@ async function createChatService(options = {}) {
   config.run.port = await availablePort();
   config.run.owner_token = "owner-test-token";
   config.channels.telegram = options.telegram || null;
+  if (options.welcomeMessages) {
+    config.chat.welcome_message = options.welcomeMessages;
+  }
   if (options.llm) {
     config.llm.endpoint = options.llm.endpoint;
     config.llm.api_key = "test-key";
@@ -267,19 +271,20 @@ async function readSession(cwd, sessionId) {
   }
 }
 
-test("chat accepts a visitor message and keeps duplicate client messages out of history", async () => {
+test("chat defaults to the English welcome message without a visitor language", async () => {
   const chat = await createChatService();
 
   try {
-    const firstResponse = await requestJson(chat.baseUrl, "/chat", {
+    const firstResponse = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
         session_id: "visitor-1",
         client_message_id: "message-1",
         message: "I need human support",
+        locale: "en-US",
       }),
     });
-    const duplicateResponse = await requestJson(chat.baseUrl, "/chat", {
+    const duplicateResponse = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
         session_id: "visitor-1",
@@ -293,16 +298,106 @@ test("chat accepts a visitor message and keeps duplicate client messages out of 
     assert.equal(duplicateResponse.status, 202);
 
     const history = await waitFor(async () => {
-      const response = await requestJson(chat.baseUrl, "/chat/history?session_id=visitor-1");
-      return response.body.messages.length === 2 ? response.body : null;
+      const response = await requestJson(chat.baseUrl, "/openvila/chat/history?session_id=visitor-1");
+      return response.body.messages.length === 3 ? response.body : null;
     }, "chat response in history");
 
     assert.deepEqual(
       history.messages.map((message) => message.role),
-      ["user", "assistant"],
+      ["assistant", "user", "assistant"],
     );
-    assert.equal(history.messages[0].content, "I need human support");
-    assert.match(history.messages[1].content, /Manual support is temporarily unavailable/);
+    assert.equal(
+      history.messages[0].content,
+      "Hello, I'm Vila, your AI customer service assistant. I can answer questions based on this website's knowledge base. If you're not satisfied with my answer, you can ask for human support.",
+    );
+    assert.equal(history.messages[1].content, "I need human support");
+    assert.match(history.messages[2].content, /Manual support is temporarily unavailable/);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("chat uses the visitor browser language for a configured welcome message", async () => {
+  const chat = await createChatService({
+    welcomeMessages: {
+      zh: "您好，欢迎联系 Vila。",
+      en: "Hello from Vila.",
+    },
+  });
+
+  try {
+    const first = await requestJson(chat.baseUrl, "/openvila/chat/history?session_id=visitor-welcome&locale=zh-CN");
+    const second = await requestJson(chat.baseUrl, "/openvila/chat/history?session_id=visitor-welcome&locale=zh-CN");
+
+    assert.deepEqual(first.body.messages.map((message) => message.content), ["您好，欢迎联系 Vila。"]);
+    assert.deepEqual(second.body.messages.map((message) => message.content), ["您好，欢迎联系 Vila。"]);
+    assert.equal((await readSession(chat.cwd, "visitor-welcome")).messages.length, 1);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("chat service allows CORS for the same host and loopback aliases", async () => {
+  const chat = await createChatService();
+
+  try {
+    const allowedOrigin = "http://127.0.0.1:5001";
+    const preflight = await fetch(`${chat.baseUrl}/openvila/chat`, {
+      method: "OPTIONS",
+      headers: {
+        Connection: "close",
+        Origin: allowedOrigin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+      },
+    });
+
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), allowedOrigin);
+    assert.match(preflight.headers.get("access-control-allow-methods") || "", /POST/);
+    assert.match(preflight.headers.get("access-control-allow-headers") || "", /Content-Type/);
+
+    const loopbackOrigin = "http://localhost:5001";
+    const loopbackResponse = await fetch(`${chat.baseUrl}/openvila/chat/history?session_id=visitor-cors`, {
+      headers: {
+        Connection: "close",
+        Origin: loopbackOrigin,
+      },
+    });
+
+    assert.equal(loopbackResponse.status, 200);
+    assert.equal(loopbackResponse.headers.get("access-control-allow-origin"), loopbackOrigin);
+
+    const rejected = await fetch(`${chat.baseUrl}/openvila/chat`, {
+      method: "OPTIONS",
+      headers: {
+        Connection: "close",
+        Origin: "http://example.com:5001",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+
+    assert.equal(rejected.status, 403);
+    assert.equal(rejected.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("widget preview renders a direct service embed URL", async () => {
+  const chat = await createChatService();
+
+  try {
+    await ensureWidgetPreview(chat.cwd);
+    const response = await fetch(`${chat.baseUrl}/widget`, { headers: { Connection: "close" } });
+    const preview = await response.text();
+    const port = new URL(chat.baseUrl).port;
+    const widgetUrl = `${chat.baseUrl}/openvila/widget.js?host=127.0.0.1&amp;port=${port}&amp;color=%230f766e`;
+    const embedUrl = `${chat.baseUrl}/openvila/widget.js?color=%230f766e`;
+
+    assert.equal(response.status, 200);
+    assert.ok(preview.includes(`src="${widgetUrl}"`));
+    assert.ok(preview.includes(`&lt;script src=&quot;${embedUrl}&quot; defer&gt;&lt;/script&gt;`));
   } finally {
     await chat.close();
   }
@@ -314,7 +409,7 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
   const events = await openChatEvents(chat.baseUrl, "visitor-stream");
 
   try {
-    const response = await requestJson(chat.baseUrl, "/chat", {
+    const response = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
         session_id: "visitor-stream",
@@ -357,16 +452,18 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
   });
   const logger = await createRuntimeFileLogger(chat.cwd);
   setGlobalLogWriter((text) => logger.append(text));
+  let events = null;
 
   try {
     await telegram.waitForPoll();
 
-    const initialResponse = await requestJson(chat.baseUrl, "/chat", {
+    const initialResponse = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
         session_id: "visitor-2",
         client_message_id: "handoff-request",
         message: "Please connect me to a human operator",
+        locale: "zh-CN",
       }),
     });
     assert.equal(initialResponse.status, 202);
@@ -379,7 +476,10 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
 
     assert.match(handoffMessage.text, /Session: visitor-2/);
     assert.match(handoffMessage.text, /Recent conversation:/);
+    assert.equal(waitingSession.locale, "zh");
     assert.equal(waitingSession.handoff.telegram_message_ids[0], handoffMessage.message_id);
+    assert.ok(waitingSession.messages.some((message) => message.content === "已请求人工客服支持。"));
+    events = await openChatEvents(chat.baseUrl, "visitor-2");
 
     telegram.deliverUpdate({
       update_id: 1,
@@ -397,8 +497,13 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
         : null;
     }, "owner reply delivery");
     assert.ok(activeSession.messages.some((message) => message.role === "support"));
+    assert.ok(activeSession.messages.some((message) => message.content === "人工客服已接入。"));
+    await events.waitForEvent(
+      (event) => event.data.content === "人工客服已接入。",
+      "manual support start event",
+    );
 
-    const visitorResponse = await requestJson(chat.baseUrl, "/chat", {
+    const visitorResponse = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
         session_id: "visitor-2",
@@ -426,7 +531,15 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
       const session = await readSession(chat.cwd, "visitor-2");
       return session?.handoff?.status === "closed" ? session : null;
     }, "manual support close");
-    assert.ok(closedSession.messages.some((message) => message.content.includes("Manual support has ended")));
+    assert.ok(
+      closedSession.messages.some(
+        (message) => message.role === "handoff" && message.content === "人工客服服务已结束，您可以继续与 Vila 对话。",
+      ),
+    );
+    await events.waitForEvent(
+      (event) => event.data.content === "人工客服服务已结束，您可以继续与 Vila 对话。",
+      "manual support close event",
+    );
 
     await logger.flush();
     const logText = await fs.readFile(logger.logFilePath, "utf8");
@@ -439,6 +552,7 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
     assert.match(logText, /visitor_message:\nMy order number is 42\./);
   } finally {
     setGlobalLogWriter(null);
+    await events?.close();
     await chat.close();
     await telegram.close();
   }

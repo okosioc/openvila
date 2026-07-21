@@ -115,7 +115,7 @@ Before LLM planning, `/scan` follows root `.gitignore`, skips styles (`.css`, `.
 
 After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite it, then fully rebuild the knowledge base.
 
-On the first scan (and with `--reset`), the confirmation prompt accepts `e` to edit the generated plan before it is saved. OpenVila opens `$VISUAL`, then `$EDITOR`, or `vi`, validates the edited lines, and shows the updated scan scope for a second confirmation. The final `.openvila/scan-plan` is written only after confirmation.
+Every interactive scan confirmation, including scan-plan mode, accepts `e` to edit the plan. OpenVila opens `$VISUAL`, then `$EDITOR`, or `vi`, validates the edited lines, and shows the updated scan scope for a second confirmation. The final `.openvila/scan-plan` is written only after confirmation.
 
 ```text
 file://www/templates/public/terms-of-service.html
@@ -195,11 +195,71 @@ Useful flags:
 
 ## Chating+
 
-After `/run` starts the local chat service, it refreshes the preview assets and serves the widget at `http://127.0.0.1:<port>/widget`; `/install` is not required for this local preview. Use `/install --apply` only when you want to inject the widget script into a website page. The widget provides a session-scoped conversation with Vila. A visitor message is accepted by `POST /chat` with `202 Accepted`; the response is delivered asynchronously through Server-Sent Events (SSE).
+After `/run` starts the local chat service, the widget provides a session-scoped conversation with Vila. A visitor message is accepted by `POST /openvila/chat` with `202 Accepted`; the response is delivered asynchronously through Server-Sent Events (SSE).
 
-Set the launcher and Send button background with `data-color` on the widget script, for example `<script src="/openvila/widget.js" data-color="#0f766e" defer></script>`. You can also use the URL query parameter `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue.
+### Widget
 
-The widget subscribes to `GET /chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
+`/run` refreshes the preview assets and serves a live preview at `http://127.0.0.1:<port>/widget`. Open that page to inspect the widget and copy an embed snippet; `/install --apply` is available when you want OpenVila to inject the widget script into a website page.
+
+For a local website on another port, load the script from `/run` directly:
+
+```html
+<script src="http://127.0.0.1:9394/openvila/widget.js?color=%230f766e" defer></script>
+```
+
+By default, the Widget uses the script URL origin as its chat API destination, so `host` and `port` query parameters are unnecessary. Use `data-host`, `data-port`, or the matching query parameters only to override that destination. Set the launcher and Send button background with `data-color` or `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue. `/run` allows CORS only when the website and OpenVila service use the same hostname on different ports, including local loopback aliases such as `localhost` and `127.0.0.1`.
+
+For an HTTPS website, browsers block a direct `http://<host>:9394/...` script as mixed content. `/run` serves HTTP only, so expose it through your HTTPS reverse proxy and use a same-origin script URL:
+
+```html
+<script src="/openvila/widget.js?color=%232c7be5" defer></script>
+```
+
+For example, an Nginx site for the same domain can proxy the Widget and chat endpoints while preserving their paths:
+
+```nginx
+location /openvila/ {
+  proxy_pass http://127.0.0.1:9394;
+  proxy_set_header Host $host;
+}
+
+location = /openvila/chat {
+  proxy_pass http://127.0.0.1:9394;
+  proxy_set_header Host $host;
+}
+
+location /openvila/chat/ {
+  proxy_pass http://127.0.0.1:9394;
+  proxy_http_version 1.1;
+  proxy_buffering off;
+  proxy_set_header Host $host;
+}
+```
+
+The widget subscribes to `GET /openvila/chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
+
+### Session
+
+Widget sessions are independent of the website's login state, cookies, and user accounts. On first use, the widget generates a random `session-...` identifier and stores it in `localStorage` under `openvila_session_id`. The same browser reuses it for the same website origin; clearing site storage, using a private window or another browser, or changing scheme/hostname/port creates a new session.
+
+### Languages
+
+The Widget reads the visitor browser's `navigator.language` and sends it when creating the session. Values starting with `zh` use Chinese (`zh`); all other values use English (`en`). The chosen language is stored with the session.
+
+System prompts use the stored session language, including the welcome message and human-takeover requested, started, notification-failed, forwarded, unavailable, and closed messages. Widget labels such as `System` and `Support` follow the same language.
+
+Vila's knowledge-based answers are generated by the LLM and instructed to use the language of the visitor's message; they do not use the browser language rule above.
+
+When OpenVila first sees a new session, it persists a Vila welcome message before the visitor's first message. It is shown by the Widget history and is not added again when the visitor refreshes or opens another window. Configure both welcome-message languages in `.openvila/config.yaml`:
+
+```yaml
+chat:
+  welcome_message:
+    zh: 您好，我是AI客服Vila，我可以根据网站的知识库回答您的问题。如果不满意我的答案，您可以直接召唤人工客服。
+    en: Hello, I'm Vila, your AI customer service assistant. I can answer questions based on this website's knowledge base. If you're not satisfied with my answer, you can ask for human support.
+```
+
+Set either message to an empty string to disable the welcome message for that language.
 
 ### Human Takeover
 
@@ -371,3 +431,4 @@ To release, update `package.json` to the target version, commit the change, then
 - Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
 - Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
 - For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
+- Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.

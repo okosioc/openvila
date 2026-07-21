@@ -67,6 +67,12 @@ export function defaultConfig() {
       telegram: null,
       feishu: null,
     },
+    chat: {
+      welcome_message: {
+        zh: "您好，我是AI客服Vila，我可以根据网站的知识库回答您的问题。如果不满意我的答案，您可以直接召唤人工客服。",
+        en: "Hello, I'm Vila, your AI customer service assistant. I can answer questions based on this website's knowledge base. If you're not satisfied with my answer, you can ask for human support.",
+      },
+    },
     marketplace: {
       endpoint: "https://openvila.com/api/v1",
     },

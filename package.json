@@ -1,6 +1,6 @@
 {
   "name": "openvila",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenVila CLI for independent site owners",
   "type": "module",
   "files": [

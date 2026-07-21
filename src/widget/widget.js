@@ -1,10 +1,14 @@
 (function () {
   if (document.getElementById("openvila-launcher")) return;
 
+  var CHAT_API_PATH = "/openvila/chat";
+  var VISITOR_LOCALE = String((window.navigator && window.navigator.language) || "").trim();
+
   function resolveConfig() {
     var host = "";
     var port = "";
     var color = "";
+    var scriptUrl = null;
 
     var script = document.currentScript;
     if (!script) {
@@ -20,10 +24,10 @@
       var src = String(script.getAttribute("src") || "").trim();
       if (src) {
         try {
-          var srcUrl = new URL(src, window.location.href);
-          var queryHost = String(srcUrl.searchParams.get("host") || "").trim();
-          var queryPort = String(srcUrl.searchParams.get("port") || "").trim();
-          var queryColor = String(srcUrl.searchParams.get("color") || "").trim();
+          scriptUrl = new URL(src, window.location.href);
+          var queryHost = String(scriptUrl.searchParams.get("host") || "").trim();
+          var queryPort = String(scriptUrl.searchParams.get("port") || "").trim();
+          var queryColor = String(scriptUrl.searchParams.get("color") || "").trim();
           if (queryHost) host = queryHost;
           if (queryPort) port = queryPort;
           if (queryColor) color = queryColor;
@@ -31,6 +35,10 @@
           // ignore malformed src url
         }
       }
+    }
+
+    if (!host && !port && scriptUrl) {
+      host = scriptUrl.origin;
     }
 
     if (!host) {
@@ -115,11 +123,12 @@
   }
 
   function roleLabel(role) {
-    if (role === "user") return "You";
+    var chinese = VISITOR_LOCALE.toLowerCase().startsWith("zh");
+    if (role === "user") return chinese ? "你" : "You";
     if (role === "assistant") return "Vila";
-    if (role === "handoff") return "System";
-    if (role === "support") return "Support";
-    return "System";
+    if (role === "handoff") return chinese ? "系统" : "System";
+    if (role === "support") return chinese ? "人工客服" : "Support";
+    return chinese ? "系统" : "System";
   }
 
   function scrollMessagesToBottom() {
@@ -232,9 +241,10 @@
   async function requestChatHistory(identity) {
     var query = new URLSearchParams({
       session_id: identity.sessionId,
-      limit: String(CHAT_HISTORY_LIMIT)
+      limit: String(CHAT_HISTORY_LIMIT),
+      locale: VISITOR_LOCALE
     });
-    var res = await fetch(apiBase + "/chat/history?" + query.toString(), {
+    var res = await fetch(apiBase + CHAT_API_PATH + "/history?" + query.toString(), {
       method: "GET"
     });
     if (!res.ok) {
@@ -308,7 +318,7 @@
     if (!window.EventSource || chatEvents) return;
 
     var query = new URLSearchParams({ session_id: chatIdentity.sessionId });
-    var source = new window.EventSource(apiBase + "/chat/events?" + query.toString());
+    var source = new window.EventSource(apiBase + CHAT_API_PATH + "/events?" + query.toString());
     chatEvents = source;
     source.addEventListener("open", function () {
       refreshChatHistory();
@@ -341,13 +351,14 @@
   }
 
   async function submitChatMessage(message, identity, clientMessageId) {
-    var res = await fetch(apiBase + "/chat", {
+    var res = await fetch(apiBase + CHAT_API_PATH, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         message: message,
         session_id: identity.sessionId,
-        client_message_id: clientMessageId
+        client_message_id: clientMessageId,
+        locale: VISITOR_LOCALE
       })
     });
 
@@ -397,7 +408,8 @@
       await submitChatMessage(text, chatIdentity, clientMessageId);
     } catch (err) {
       setWaitingForReply(false);
-      append("System", "Request failed: " + err.message);
+      var chinese = VISITOR_LOCALE.toLowerCase().startsWith("zh");
+      append(chinese ? "系统" : "System", (chinese ? "请求失败：" : "Request failed: ") + err.message);
     }
   });
 

@@ -40,6 +40,24 @@ function serializeLlmResponse(response) {
   }
 }
 
+function parseLlmResponse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function providerError(llmPrefix, response, status, statusText = "") {
+  const fullResponse = serializeLlmResponse(response);
+  const summary = sanitizeForLogContent(fullResponse, 2000);
+  const statusLabel = `${status}${statusText ? ` ${statusText}` : ""}`;
+  return {
+    log: `${llmPrefix}> [error] HTTP ${statusLabel}\nresponse: ${fullResponse}`,
+    error: `LLM error ${status}: ${summary}`,
+  };
+}
+
 function emptyContentError(llmPrefix, response, reason = "no content in choices[0].message.content") {
   const fullResponse = serializeLlmResponse(response);
   const summary = sanitizeForLogContent(fullResponse, 2000);
@@ -223,16 +241,23 @@ export async function chatCompletion(config, messages, overrides = {}) {
       signal: controller.signal,
     });
 
-    const json = await response.json().catch(() => ({}));
+    const responseText = await response.text();
+    const json = parseLlmResponse(responseText);
     if (!response.ok) {
-      const errorContent =
-        json?.error?.message ||
-        json?.message ||
-        cleanTextForPrompt(JSON.stringify(json).slice(0, 800), 800);
-      emitOutputLog(prefixedContentBlock(llmPrefix, `[error] ${errorContent}`));
+      const failure = providerError(llmPrefix, json ?? responseText, response.status, response.statusText);
+      emitOutputLog(failure.log);
       return {
         ok: false,
-        error: `LLM error ${response.status}: ${JSON.stringify(json).slice(0, 400)}`,
+        error: failure.error,
+      };
+    }
+
+    if (!json) {
+      const failure = emptyContentError(llmPrefix, responseText, "provider response is not valid JSON");
+      emitOutputLog(failure.log);
+      return {
+        ok: false,
+        error: failure.error,
       };
     }
 
@@ -311,21 +336,28 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
     const contentType = String(response.headers.get("content-type") || "").toLowerCase();
 
     if (!response.ok) {
-      const json = await response.json().catch(() => ({}));
-      const errorContent =
-        json?.error?.message ||
-        json?.message ||
-        cleanTextForPrompt(JSON.stringify(json).slice(0, 800), 800);
-      emitOutputLog(prefixedContentBlock(llmPrefix, `[error] ${errorContent}`));
+      const responseText = await response.text();
+      const json = parseLlmResponse(responseText);
+      const failure = providerError(llmPrefix, json ?? responseText, response.status, response.statusText);
+      emitOutputLog(failure.log);
       return {
         ok: false,
-        error: `LLM error ${response.status}: ${JSON.stringify(json).slice(0, 400)}`,
+        error: failure.error,
       };
     }
 
     // Some providers ignore stream=true and still return a full JSON payload.
     if (!contentType.includes("text/event-stream")) {
-      const json = await response.json().catch(() => ({}));
+      const responseText = await response.text();
+      const json = parseLlmResponse(responseText);
+      if (!json) {
+        const failure = emptyContentError(llmPrefix, responseText, "provider response is not valid JSON");
+        emitOutputLog(failure.log);
+        return {
+          ok: false,
+          error: failure.error,
+        };
+      }
       const content = json?.choices?.[0]?.message?.content;
       if (!content) {
         const failure = emptyContentError(llmPrefix, json);

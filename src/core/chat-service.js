@@ -41,6 +41,32 @@ function openSseStream(res) {
   });
 }
 
+function allowSameHostCors(req, res) {
+  const origin = String(req.headers.origin || "").trim();
+  const host = String(req.headers.host || "").trim();
+  if (!origin || !host) {
+    return false;
+  }
+
+  try {
+    const originUrl = new URL(origin);
+    const requestUrl = new URL(`http://${host}`);
+    const sameHostname = originUrl.hostname === requestUrl.hostname;
+    const bothLoopback = LOOPBACK_HOSTNAMES.has(originUrl.hostname) && LOOPBACK_HOSTNAMES.has(requestUrl.hostname);
+    if (!sameHostname && !bothLoopback) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-OpenVila-Owner-Token");
+  res.setHeader("Vary", "Origin");
+  return true;
+}
+
 function writeSseEvent(res, eventName, payload) {
   res.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
@@ -82,6 +108,8 @@ const HANDOFF_MESSAGE_MAX_CHARS = 800;
 const HANDOFF_TELEGRAM_TRANSCRIPT_MAX_CHARS = 3400;
 const OPEN_HANDOFF_STATUSES = new Set(["pending_send", "waiting_owner", "active"]);
 const RESERVED_CHAT_SESSION_IDS = new Set(["telegram"]);
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const CHAT_API_PATH = "/openvila/chat";
 const SSE_HEARTBEAT_INTERVAL_MS = 20000;
 const chatWriteQueues = new Map();
 const chatProcessQueues = new Map();
@@ -196,6 +224,39 @@ function normalizeChatContent(value) {
     return `${normalized.slice(0, 32000)}\n...[truncated]`;
   }
   return normalized;
+}
+
+function chatLocale(value) {
+  return String(value || "").trim().toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+function chatWelcomeMessage(config, visitorLocale = "") {
+  const message = chatLocale(visitorLocale) === "zh" ? config?.chat?.welcome_message?.zh : config?.chat?.welcome_message?.en;
+  return normalizeChatContent(message);
+}
+
+function chatHandoffText(locale, key) {
+  const messages =
+    chatLocale(locale) === "zh"
+      ? {
+          requested: "已请求人工客服支持。",
+          started: "人工客服已接入。",
+          closed: "人工客服服务已结束，您可以继续与 Vila 对话。",
+          notification_failed: "人工客服通知发送失败。",
+          forwarded: "您的消息已转发给人工客服，请等待回复。",
+          request_sent: "您的请求已转发给站长，请等待人工客服回复。",
+          unavailable: "人工客服暂时不可用，请稍后再试。",
+        }
+      : {
+          requested: "Manual support requested.",
+          started: "Manual support started.",
+          closed: "Manual support has ended. You can continue chatting with Vila.",
+          notification_failed: "Manual support notification failed.",
+          forwarded: "Your message has been forwarded to manual support. Please wait for a reply.",
+          request_sent: "Your request has been forwarded to the owner. Please wait for manual support.",
+          unavailable: "Manual support is temporarily unavailable. Please try again later.",
+        };
+  return messages[key] || "";
 }
 
 function normalizeMessageId(value) {
@@ -323,6 +384,7 @@ async function readChatSession(paths, sessionId) {
 
   return {
     session_id: normalizeIdentityValue(parsed.session_id, 96) || sessionId,
+    locale: chatLocale(parsed.locale),
     created_at: typeof parsed.created_at === "string" && parsed.created_at ? parsed.created_at : "",
     updated_at: typeof parsed.updated_at === "string" && parsed.updated_at ? parsed.updated_at : "",
     handoff: normalizeStoredHandoff(parsed.handoff),
@@ -361,8 +423,15 @@ async function appendChatMessages(paths, identity, entries, context = {}) {
   return enqueueSessionWrite(sessionId, async () => {
     const now = new Date().toISOString();
     const existing = await readChatSession(paths, sessionId);
+    if (contextSafe.onlyIfNew && existing) {
+      return {
+        session: existing,
+        appended: [],
+      };
+    }
     const current = existing || {
       session_id: sessionId,
+      locale: chatLocale(contextSafe.locale),
       created_at: now,
       updated_at: now,
       handoff: null,
@@ -406,6 +475,7 @@ async function submitUserMessage(paths, identity, content, clientMessageId, cont
     const existing = await readChatSession(paths, sessionId);
     const current = existing || {
       session_id: sessionId,
+      locale: chatLocale(context.locale),
       created_at: now,
       updated_at: now,
       handoff: null,
@@ -496,7 +566,7 @@ async function createTelegramHandoff(paths, sessionId) {
     session.updated_at = requestedAt;
     session.messages = [
       ...session.messages,
-      { role: "handoff", content: "Manual support requested.", ts: requestedAt },
+      { role: "handoff", content: chatHandoffText(session.locale, "requested"), ts: requestedAt },
     ].slice(-MAX_CHAT_MESSAGES_PER_SESSION);
     await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(session, null, 2)}\n`, "utf8");
     return session.handoff;
@@ -558,7 +628,8 @@ async function addTelegramHandoffMessageId(paths, sessionId, messageId) {
 }
 
 async function activateTelegramHandoff(paths, sessionId, chatId, replyToMessageId) {
-  const handoff = await readTelegramHandoff(paths, sessionId);
+  const session = await readChatSession(paths, sessionId);
+  const handoff = session?.handoff?.channel === "telegram" ? session.handoff : null;
   if (
     !isOpenTelegramHandoff(handoff) ||
     handoff.telegram_chat_id !== String(chatId) ||
@@ -570,15 +641,24 @@ async function activateTelegramHandoff(paths, sessionId, chatId, replyToMessageI
     return handoff;
   }
 
-  return updateTelegramHandoff(
+  const updated = await updateTelegramHandoff(
     paths,
     sessionId,
     {
       status: "active",
       activated_at: handoff.activated_at || new Date().toISOString(),
     },
-    "Manual support started.",
+    chatHandoffText(session.locale, "started"),
   );
+  if (!updated) {
+    return null;
+  }
+  const refreshed = await readChatSession(paths, sessionId);
+  const systemMessage = refreshed?.messages.at(-1);
+  return {
+    ...updated,
+    system_message: systemMessage?.role === "handoff" ? systemMessage : null,
+  };
 }
 
 async function closeTelegramHandoff(paths, sessionId) {
@@ -589,7 +669,6 @@ async function closeTelegramHandoff(paths, sessionId) {
       status: "closed",
       closed_at: new Date().toISOString(),
     },
-    "Manual support ended.",
   );
 }
 
@@ -650,10 +729,11 @@ async function notifyTelegramHandoff(cwd, config, paths, sessionId) {
     );
     return notified;
   } catch (error) {
+    const session = await readChatSession(paths, sessionId);
     await updateTelegramHandoff(paths, sessionId, {
       status: "notify_failed",
       error: error.message,
-    }, "Manual support notification failed.").catch(() => undefined);
+    }, chatHandoffText(session?.locale, "notification_failed")).catch(() => undefined);
     writeGlobalLog(`[telegram] handoff notification failed\nsession_id: ${sanitizeLogField(sessionId)}\nerror: ${sanitizeLogField(error.message)}`);
     return null;
   }
@@ -686,7 +766,6 @@ async function forwardVisitorMessageToTelegram(cwd, config, sessionId, message) 
 }
 
 async function replyDuringHumanSupport(cwd, config, paths, identity, message, req, route) {
-  void paths;
   void req;
   void route;
   const forwarded = await forwardVisitorMessageToTelegram(cwd, config, identity.session_id, message);
@@ -694,9 +773,8 @@ async function replyDuringHumanSupport(cwd, config, paths, identity, message, re
     return null;
   }
 
-  const answer = forwarded.delivered
-    ? "Your message has been forwarded to manual support. Please wait for a reply."
-    : "Manual support is temporarily unavailable. Please try again later.";
+  const session = await readChatSession(paths, identity.session_id);
+  const answer = chatHandoffText(session?.locale, forwarded.delivered ? "forwarded" : "unavailable");
   return answer;
 }
 
@@ -705,9 +783,9 @@ async function requestHumanSupport(cwd, config, paths, identity, message, req, r
     `[chat] human support requested\nsession_id: ${sanitizeLogField(identity.session_id)}\nmessage_length: ${message.length}\nvisitor_message:\n${fullLogText(message)}\nroute: ${sanitizeLogField(route)}`,
   );
   const handoff = await notifyTelegramHandoff(cwd, config, paths, identity.session_id);
-  const answer = handoff
-    ? "Your request has been forwarded to the owner. Please wait for manual support."
-    : "Manual support is temporarily unavailable. Please try again later.";
+  const session = await readChatSession(paths, identity.session_id);
+  const systemMessage = session?.messages.at(-1);
+  const answer = chatHandoffText(session?.locale, handoff ? "request_sent" : "unavailable");
   writeGlobalLog(
     `[chat] human support handoff result\nsession_id: ${sanitizeLogField(identity.session_id)}\nstatus: ${sanitizeLogField(handoff?.status || "unavailable")}`,
   );
@@ -722,7 +800,7 @@ async function requestHumanSupport(cwd, config, paths, identity, message, req, r
     ).catch(() => undefined);
   }
 
-  return { answer, handoff };
+  return { answer, handoff, system_message: systemMessage?.role === "handoff" ? systemMessage : null };
 }
 
 function parseActionRequest(message) {
@@ -1049,6 +1127,14 @@ export async function startChatService(cwd, config, options = {}) {
     return appendAndPublish(identity, [{ ...messageOptions, role: "assistant", content }], context);
   }
 
+  async function ensureChatWelcome(identity, req, route, visitorLocale = "") {
+    const content = chatWelcomeMessage(config, visitorLocale);
+    if (!content) {
+      return null;
+    }
+    return appendAssistantReply(identity, content, { req, route, mode: "welcome", locale: visitorLocale, onlyIfNew: true });
+  }
+
   async function processSubmittedMessage(identity, userMessage, req, route) {
     const message = userMessage.content;
     const manualSupportAnswer = await replyDuringHumanSupport(cwd, config, paths, identity, message, req, route);
@@ -1078,6 +1164,9 @@ export async function startChatService(cwd, config, options = {}) {
 
     if (isHumanSupportRequest(message)) {
       const support = await requestHumanSupport(cwd, config, paths, identity, message, req, route);
+      if (support.system_message) {
+        publishChatEvent(identity.session_id, "message", support.system_message);
+      }
       await appendAssistantReply(identity, support.answer, { req, route, mode: "human_support" });
       return;
     }
@@ -1106,12 +1195,14 @@ export async function startChatService(cwd, config, options = {}) {
     );
   }
 
-  function queueSubmittedMessage(identity, message, clientMessageId, req, route) {
+  function queueSubmittedMessage(identity, message, clientMessageId, req, route, visitorLocale) {
     const task = enqueueSessionProcess(identity.session_id, async () => {
+      await ensureChatWelcome(identity, req, route, visitorLocale);
       const submitted = await submitUserMessage(paths, identity, message, clientMessageId, {
         req,
         route,
         mode: "chat",
+        locale: visitorLocale,
       });
       if (!submitted || submitted.duplicate) {
         return;
@@ -1142,6 +1233,17 @@ export async function startChatService(cwd, config, options = {}) {
       }
 
       const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      const corsAllowed = allowSameHostCors(req, res);
+
+      if (req.method === "OPTIONS") {
+        if (req.headers.origin && !corsAllowed) {
+          sendJson(res, 403, { error: "Cross-host CORS is not allowed" });
+          return;
+        }
+        res.writeHead(204);
+        res.end();
+        return;
+      }
 
       if (req.method === "GET" && url.pathname === "/health") {
         sendJson(res, 200, { ok: true, service: "openvila", time: new Date().toISOString() });
@@ -1150,7 +1252,20 @@ export async function startChatService(cwd, config, options = {}) {
 
       if (req.method === "GET" && url.pathname === "/widget") {
         const content = (await readTextSafe(paths.widget)) || "<h1>Widget not installed. Run /install first.</h1>";
-        sendText(res, 200, content, "text/html; charset=utf-8");
+        const serviceHost = String(req.headers.host || `127.0.0.1:${port}`);
+        const serviceUrl = new URL(`http://${serviceHost}`);
+        const widgetUrl = new URL("/openvila/widget.js", serviceUrl);
+        widgetUrl.searchParams.set("host", serviceUrl.hostname);
+        widgetUrl.searchParams.set("port", serviceUrl.port || String(port));
+        widgetUrl.searchParams.set("color", "#0f766e");
+        const embedUrl = new URL("/openvila/widget.js", serviceUrl);
+        embedUrl.searchParams.set("color", "#0f766e");
+        const escapedWidgetUrl = widgetUrl.toString().replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+        const escapedEmbedUrl = embedUrl.toString().replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+        const preview = content
+          .replaceAll("{{OPENVILA_WIDGET_URL}}", escapedWidgetUrl)
+          .replaceAll("{{OPENVILA_EMBED_SNIPPET}}", `&lt;script src=&quot;${escapedEmbedUrl}&quot; defer&gt;&lt;/script&gt;`);
+        sendText(res, 200, preview, "text/html; charset=utf-8");
         return;
       }
 
@@ -1164,16 +1279,18 @@ export async function startChatService(cwd, config, options = {}) {
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/chat/history") {
+      if (req.method === "GET" && url.pathname === `${CHAT_API_PATH}/history`) {
         const identity = resolveChatIdentity({
           session_id: url.searchParams.get("session_id") || "",
         });
         const limit = parseHistoryLimit(url.searchParams.get("limit"));
+        const visitorLocale = url.searchParams.get("locale") || "";
         if (!identity.session_id) {
           sendJson(res, 400, { error: "session_id is required" });
           return;
         }
 
+        await ensureChatWelcome(identity, req, `${CHAT_API_PATH}/history`, visitorLocale);
         const messages = await loadChatHistory(paths, identity.session_id, limit);
         sendJson(res, 200, {
           ok: true,
@@ -1183,7 +1300,7 @@ export async function startChatService(cwd, config, options = {}) {
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/chat/events") {
+      if (req.method === "GET" && url.pathname === `${CHAT_API_PATH}/events`) {
         const identity = resolveChatIdentity({
           session_id: url.searchParams.get("session_id") || "",
         });
@@ -1198,9 +1315,10 @@ export async function startChatService(cwd, config, options = {}) {
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/chat") {
+      if (req.method === "POST" && url.pathname === CHAT_API_PATH) {
         const body = await parseBody(req);
         const message = String(body.message || "").trim();
+        const visitorLocale = String(body.locale || "").trim();
         const identity = resolveChatIdentity(body);
 
         if (!message || !identity.session_id) {
@@ -1209,7 +1327,7 @@ export async function startChatService(cwd, config, options = {}) {
         }
 
         const clientMessageId = normalizeClientMessageId(body.client_message_id) || crypto.randomUUID();
-        queueSubmittedMessage(identity, message, clientMessageId, req, "/chat");
+        queueSubmittedMessage(identity, message, clientMessageId, req, CHAT_API_PATH, visitorLocale);
         sendJson(res, 202, {
           ok: true,
           accepted: true,
@@ -1294,6 +1412,9 @@ export async function startChatService(cwd, config, options = {}) {
       if (!handoff) {
         return;
       }
+      if (handoff.system_message) {
+        publishChatEvent(sessionId, "message", handoff.system_message);
+      }
       const identity = { session_id: sessionId };
       const appended = await appendChatMessages(paths, identity, [{ role: "support", content: text }], {
         route: "telegram",
@@ -1310,19 +1431,23 @@ export async function startChatService(cwd, config, options = {}) {
       if (!handoff) {
         return;
       }
+      if (handoff.system_message) {
+        publishChatEvent(sessionId, "message", handoff.system_message);
+      }
+      const session = await readChatSession(paths, sessionId);
       const closed = await closeTelegramHandoff(paths, sessionId);
       if (!closed) {
         return;
       }
       const identity = { session_id: sessionId };
       const appended = await appendChatMessages(paths, identity, [
-        { role: "support", content: "Manual support has ended. You can continue chatting with Vila." },
+        { role: "handoff", content: chatHandoffText(session?.locale, "closed") },
       ], {
         route: "telegram",
         mode: "human_support_closed",
       });
       const message = appended?.appended?.[0];
-      if (message?.role === "support") {
+      if (message?.role === "handoff") {
         publishChatEvent(sessionId, "message", message);
       }
       writeGlobalLog(`[telegram] handoff closed\nsession_id: ${sanitizeLogField(sessionId)}`);

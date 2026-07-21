@@ -260,6 +260,70 @@ test("runScan lets the owner edit a generated scan plan before confirming", asyn
   assert.equal(context.logs.filter((line) => line.includes("Scan Scope To Confirm")).length, 2);
 });
 
+test("runScan lets the owner edit a reused scan plan before confirming", async () => {
+  const answers = ["e", "y"];
+  const prompts = [];
+  const context = createContext({
+    ask: async (prompt) => {
+      prompts.push(prompt);
+      return answers.shift();
+    },
+  });
+  const existingPlan = createPlan({
+    planning_mode: "plan",
+    framework: "unknown",
+    framework_signals: [],
+    llm_model: "",
+    confirmed_scan_plan: { files: ["faq.html"] },
+  });
+  const editedPlan = createPlan({
+    planning_mode: "plan",
+    framework: "unknown",
+    framework_signals: [],
+    llm_model: "",
+    filesystem: {
+      total_candidates: 2,
+      matched_paths: ["docs/guide.md"],
+    },
+  });
+  const prepareCalls = [];
+  let savedPlan = null;
+
+  await runScan(
+    context,
+    { options: {} },
+    {
+      loadConfig: async () => ({ scan: {} }),
+      prepareKnowledgeScanPlan: async (cwd, options) => {
+        prepareCalls.push({ cwd, options });
+        if (options.scanPlan) {
+          return {
+            ...editedPlan,
+            confirmed_scan_plan: options.scanPlan,
+            generated_scan_plan: options.scanPlan,
+          };
+        }
+        return existingPlan;
+      },
+      editScanPlanText: async (text) => {
+        assert.match(text, /^file:\/\/faq\.html\n$/);
+        return "file://docs/**\n";
+      },
+      saveKnowledgeScanPlan: async (cwd, plan) => {
+        savedPlan = { cwd, plan };
+        return "/tmp/openvila-scan-test/.openvila/scan-plan";
+      },
+      buildKnowledgeBase: async () => createBuildResult(),
+    },
+  );
+
+  assert.match(prompts[0], /e=edit plan/);
+  assert.equal(prepareCalls.length, 2);
+  assert.deepEqual(prepareCalls[1].options.scanPlan, { files: ["docs/**"] });
+  assert.deepEqual(savedPlan.plan.generated_scan_plan, { files: ["docs/**"] });
+  assert.equal(context.logs.filter((line) => line.includes("Scan Scope To Confirm")).length, 2);
+});
+
 test("runScan limits database queries in scan plan logs", async () => {
   const context = createContext();
   const queries = Array.from({ length: 31 }, (_, index) => ({

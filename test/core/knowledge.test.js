@@ -87,6 +87,10 @@ test("default scan config has no db_auto toggle", () => {
   assert.equal("db_auto" in defaultConfig().scan, false);
 });
 
+test("default config has a language setting", () => {
+  assert.equal(typeof defaultConfig().language, "string");
+});
+
 test("prepareKnowledgeScanPlan excludes gitignored styles and multimedia candidates before LLM planning", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   const llm = await startLlmServer();

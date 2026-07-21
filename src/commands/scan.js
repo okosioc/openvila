@@ -106,7 +106,7 @@ function renderScanPlan(ctx, plan) {
 }
 
 async function confirmSelections(ctx, plan, defaults) {
-  const allowEdit = Boolean(plan.generated_scan_plan);
+  const allowEdit = Boolean(plan.generated_scan_plan || plan.confirmed_scan_plan);
   const promptText = pick(
     ctx.locale,
     allowEdit ? "确认该扫描计划并继续？[Y/e/n]（e=编辑计划）" : "确认该扫描计划并继续？[Y/n]",
@@ -150,13 +150,13 @@ async function confirmSelections(ctx, plan, defaults) {
 }
 
 async function editGeneratedScanPlan(ctx, plan, config, options, prepareScanPlan, editPlanText) {
-  const generatedPlan = plan.generated_scan_plan;
-  if (!generatedPlan) {
+  const editablePlan = plan.generated_scan_plan || plan.confirmed_scan_plan;
+  if (!editablePlan) {
     throw new Error("Scan plan is not available for editing");
   }
 
   ctx.log(pick(ctx.locale, "[scan] 正在打开编辑器修改 scan plan...", "[scan] Opening editor for scan plan..."));
-  const editedText = await editPlanText(stringifyKnowledgeScanPlan(generatedPlan));
+  const editedText = await editPlanText(stringifyKnowledgeScanPlan(editablePlan));
   const editedPlan = parseKnowledgeScanPlan(editedText);
   const refreshedPlan = await prepareScanPlan(ctx.cwd, {
     config,

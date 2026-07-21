@@ -209,7 +209,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
         "Constraints:",
         "- Choose knowledge_files from candidates only.",
         "- Choose knowledge_tables from table candidate keys only.",
-        "- Prioritize business text pages: pricing, terms, privacy, refund, faq/help, about/contact, product docs, support, policy pages, blog index/posts.",
+        "- Prioritize business pages: pricing, terms, privacy, refund, faq/help, about/contact, product docs, support, policy pages, blog index/posts.",
         "- Prioritize tables holding user-visible business knowledge: pages/posts/articles/faq/policies/pricing/help/docs content.",
         "- Exclude static/code-only files: assets/**, static/**, public/**, dist/**, build/**, vendor/**, node_modules/**.",
         "- Exclude style/script/media files: *.css, *.scss, *.sass, *.less, *.js.map, *.css.map, *.min.js, *.min.css, icons/svgs/images/fonts/videos.",
@@ -326,6 +326,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
       },
       locale: inferLocale(config),
       scan_plan_path: runtimePaths(cwd).scanPlan,
+      confirmed_scan_plan: scanPlan,
       generated_scan_plan: scanPlanOverride || undefined,
     };
   }
