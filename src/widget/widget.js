@@ -315,7 +315,7 @@
   }
 
   function openChatEvents() {
-    if (!window.EventSource || chatEvents) return;
+    if (!chatIdentity || !window.EventSource || chatEvents) return;
 
     var query = new URLSearchParams({ session_id: chatIdentity.sessionId });
     var source = new window.EventSource(apiBase + CHAT_API_PATH + "/events?" + query.toString());
@@ -370,9 +370,12 @@
     }
   }
 
-  button.addEventListener("click", function () {
+  button.addEventListener("click", function (event) {
+    if (event && event.isTrusted === false) return;
+
     panel.style.display = panel.style.display === "none" ? "block" : "none";
     if (panel.style.display === "block") {
+      chatIdentity = chatIdentity || getOrCreateIdentity();
       scrollMessagesToBottom();
       openChatEvents();
       refreshChatHistory();
@@ -386,14 +389,14 @@
     closeChatEvents();
   });
 
-  var chatIdentity = getOrCreateIdentity();
+  var chatIdentity = null;
 
   panel.querySelector("#openvila-form").addEventListener("submit", async function (e) {
     e.preventDefault();
     if (waitingForReply) return;
     var input = panel.querySelector("#openvila-input");
     var text = (input.value || "").trim();
-    if (!text) return;
+    if (!text || !chatIdentity) return;
     setWaitingForReply(true);
     input.value = "";
     var clientMessageId = generateId("message");
@@ -424,25 +427,6 @@
       }
     } catch (error) {}
   }
-
-  (async function restoreChatHistory() {
-    try {
-      var messages = await requestChatHistory(chatIdentity);
-      if (!Array.isArray(messages) || messages.length === 0) {
-        return;
-      }
-      for (var i = 0; i < messages.length; i += 1) {
-        var item = messages[i];
-        if (!item || typeof item !== "object") continue;
-        var content = String(item.content || "").trim();
-        if (!content) continue;
-        appendChatMessage(item);
-      }
-      scrollMessagesToBottom();
-    } catch (error) {
-      // ignore history restore failures
-    }
-  })();
 
   setInterval(function () {
     if (panel.style.display === "block" && !isChatEventsOpen()) {

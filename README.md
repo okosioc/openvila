@@ -1,4 +1,4 @@
-# OpenVila (MVP)
+# OpenVila
 
 OpenVila is a local REPL tool for independent site owners.
 It supports:
@@ -11,7 +11,7 @@ It supports:
 
 ## Install OpenVila CLI
 
-### Real website project (recommended, after npm publish)
+### Real website project
 
 ```bash
 npm install -g openvila
@@ -233,7 +233,7 @@ The widget subscribes to `GET /openvila/chat/events?session_id=...`. During know
 
 ### Session
 
-Widget sessions are independent of the website's login state, cookies, and user accounts. On first use, the widget generates a random `session-...` identifier and stores it in `localStorage` under `openvila_session_id`. The same browser reuses it for the same website origin; clearing site storage, using a private window or another browser, or changing scheme/hostname/port creates a new session.
+Widget sessions are independent of the website's login state, cookies, and user accounts. Loading a page does not create a session. On the first trusted click of the Widget launcher, it generates a random `session-...` identifier and stores it in `localStorage` under `openvila_session_id`, then loads the welcome message and history. The same browser reuses it for the same website origin; clearing site storage, using a private window or another browser, or changing scheme/hostname/port creates a new session. Programmatic launcher clicks are ignored, though browser automation that simulates a real click cannot be reliably distinguished from a visitor.
 
 ### Languages
 

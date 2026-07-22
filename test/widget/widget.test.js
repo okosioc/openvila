@@ -168,6 +168,7 @@ function createWidgetHarness(options = {}) {
     document,
     eventSources,
     fetchCalls,
+    storage,
     context: {
       Date,
       URL,
@@ -186,7 +187,9 @@ async function loadWidget(options = {}) {
   const harness = createWidgetHarness(options);
   vm.runInNewContext(source, harness.context, { filename: widgetPath });
   await Promise.resolve();
-  await harness.document.getElementById("openvila-launcher").emit("click");
+  if (options.open !== false) {
+    await harness.document.getElementById("openvila-launcher").emit("click", { isTrusted: true });
+  }
   return harness;
 }
 
@@ -195,6 +198,22 @@ function submitEvent() {
     preventDefault() {},
   };
 }
+
+test("widget creates a session only after a trusted launcher click", async () => {
+  const harness = await loadWidget({ open: false });
+  const launcher = harness.document.getElementById("openvila-launcher");
+
+  assert.equal(harness.storage.get("openvila_session_id"), undefined);
+  assert.equal(harness.fetchCalls.length, 0);
+
+  await launcher.emit("click", { isTrusted: false });
+  assert.equal(harness.storage.get("openvila_session_id"), undefined);
+  assert.equal(harness.fetchCalls.length, 0);
+
+  await launcher.emit("click", { isTrusted: true });
+  assert.match(harness.storage.get("openvila_session_id"), /^session-/);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).includes("/openvila/chat/history")).length, 1);
+});
 
 test("widget uses a visitor-facing title with OpenVila attribution", async () => {
   const harness = await loadWidget();
