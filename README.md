@@ -77,7 +77,7 @@ node src/index.js run
 /channel set telegram --bot-token xxx --chat-id yyy [--endpoint https://...]
 /channel set feishu --webhook https://open.feishu.cn/...
 /channel test telegram
-/run [--port 9394]
+/run [--port 9394] [--fork]
 ```
 
 Direct command mode is also supported:
@@ -189,6 +189,8 @@ Useful flags:
 ## Chating+
 
 After `/run` starts the local chat service, the widget provides a session-scoped conversation with Vila. A visitor message is accepted by `POST /openvila/chat` with `202 Accepted`; the response is delivered asynchronously through Server-Sent Events (SSE).
+
+For a Linux server, use `openvila run --fork` to detach the chat service from the current terminal. The command prints its PID; use `kill <pid>` to stop it and inspect `.openvila/logs/debug-YYYY-MM-DD.log` for startup and runtime logs.
 
 ### Widget
 

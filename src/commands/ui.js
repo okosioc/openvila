@@ -30,6 +30,7 @@ function commandSuggestions(locale) {
     { cmd: "/vila list", desc: pick(locale, "查看精灵列表", "list installed vilas") },
     { cmd: "/channel list", desc: pick(locale, "查看通道配置", "show channel config") },
     { cmd: "/run", desc: pick(locale, "启动聊天服务", "start chat service") },
+    { cmd: "/run --fork", desc: pick(locale, "在后台启动聊天服务", "start chat service in background") },
     { cmd: "/help", desc: pick(locale, "显示帮助", "show help") },
     { cmd: "/exit", desc: pick(locale, "退出管理终端", "exit manager") },
   ];

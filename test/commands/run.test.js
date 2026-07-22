@@ -126,3 +126,42 @@ test("runRun lets the command port override the runtime configuration", async ()
   assert.equal(previewCwd, "/tmp/openvila-run-test");
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: enabled")));
 });
+
+test("runRun starts a detached child when fork is set", async () => {
+  const context = createContext();
+  const spawnCalls = [];
+  let unrefCalled = false;
+
+  await runRun(
+    context,
+    { options: { fork: true, port: "9510" } },
+    {
+      cliEntryPath: "/opt/openvila/src/index.js",
+      process: { execPath: "/usr/local/bin/node", env: { TEST_VALUE: "1" } },
+      spawn: (command, args, options) => {
+        spawnCalls.push({ command, args, options });
+        return {
+          pid: 12345,
+          unref: () => {
+            unrefCalled = true;
+          },
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(spawnCalls, [
+    {
+      command: "/usr/local/bin/node",
+      args: ["/opt/openvila/src/index.js", "run", "--port", "9510"],
+      options: {
+        cwd: "/tmp/openvila-run-test",
+        env: { TEST_VALUE: "1" },
+        detached: true,
+        stdio: "ignore",
+      },
+    },
+  ]);
+  assert.equal(unrefCalled, true);
+  assert.ok(context.logs.some((line) => line.includes("OpenVila started in background: PID 12345")));
+});
