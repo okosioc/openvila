@@ -896,7 +896,7 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
     {
       role: "system",
       content:
-        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[]. (2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. (3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list. (4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[]. (5) Use Markdown links only when the context provides the URL; never invent URLs.",
+        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[]. (2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. (3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list. (4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[]. (5) When context provides a relevant Markdown link, use its URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs.",
     },
     {
       role: "user",
@@ -991,7 +991,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
     {
       role: "system",
       content:
-        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. When relevant, use Markdown links only for URLs provided in the selected documents; never invent URLs. Reply in the same language as user input.",
+        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. When a selected document contains a relevant Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs. Reply in the same language as user input.",
     },
     {
       role: "user",

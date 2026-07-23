@@ -429,6 +429,7 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(deltas.map((event) => event.data.delta).join(""), "Hello from Vila");
     assert.equal(llm.requests.length, 2);
     assert.equal(llm.requests[1].stream, true);
+    assert.match(llm.requests[1].messages[0].content, /link with text that fits your answer/);
 
     const session = await readSession(chat.cwd, "visitor-stream");
     assert.equal(session.messages.at(-1).content, "Hello from Vila");
