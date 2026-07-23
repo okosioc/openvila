@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
@@ -15,7 +14,6 @@ function runtimeGitignoreTemplate() {
     "# OpenVila runtime local ignores",
     "logs/",
     "chats/",
-    "actions/.venv/",
     "**/__pycache__/",
     "*.pyc",
     "*.pyo",
@@ -33,21 +31,15 @@ export function runtimePaths(cwd) {
     runtimeGitignore: path.join(base, ".gitignore"),
     knowledges: path.join(base, "knowledges"),
     knowledgeDocs: path.join(base, "knowledges", "docs"),
-    actions: path.join(base, "actions"),
     vilas: path.join(base, "vilas"),
     logs: path.join(base, "logs"),
     chats: path.join(base, "chats"),
     telegramState: path.join(base, "chats", "telegram.json"),
     widget: path.join(base, "widget.html"),
     widgetScript: path.join(base, "widget.js"),
-    reviewQueue: path.join(base, "logs", "review-queue.json"),
     knowledgeIndex: path.join(base, "knowledges", "index.md"),
     knowledgeManifest: path.join(base, "knowledges", "manifest.json"),
   };
-}
-
-function generateOwnerToken() {
-  return crypto.randomBytes(20).toString("hex");
 }
 
 export function defaultConfig() {
@@ -88,7 +80,6 @@ export function defaultConfig() {
     },
     run: {
       port: 9394,
-      owner_token: generateOwnerToken(),
     },
   };
 }
@@ -146,17 +137,12 @@ async function ensureRuntimeDirectories(paths) {
   await ensureDir(paths.base);
   await ensureDir(paths.knowledges);
   await ensureDir(paths.knowledgeDocs);
-  await ensureDir(paths.actions);
   await ensureDir(paths.vilas);
   await ensureDir(paths.logs);
   await ensureDir(paths.chats);
 }
 
 async function ensureRuntimeFiles(cwd, paths, options = {}) {
-  if (!(await exists(paths.reviewQueue))) {
-    await fs.writeFile(paths.reviewQueue, "[]\n", "utf8");
-  }
-
   if (!(await exists(paths.telegramState))) {
     await fs.writeFile(paths.telegramState, '{\n  "last_update_id": 0\n}\n', "utf8");
   }

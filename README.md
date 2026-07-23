@@ -4,7 +4,6 @@ OpenVila is a local REPL tool for independent site owners.
 It supports:
 - scanning website content into a markdown knowledge base
 - serving a chat widget
-- creating and approving owner-only actions
 - managing vilas
 - configuring owner channels (Telegram/Feishu)
 - running a local chat service
@@ -69,9 +68,6 @@ node src/index.js run
 ```bash
 /ui
 /scan [--yes] [--dry-run] [--reset] [--no-filesystem] [--no-db] [--no-remote]
-/action list
-/action create do_complaint
-/action test do_complaint --payload '{"url":"/page/123"}'
 /vila list
 /vila install demo --file ./demo-vila.json
 /channel set telegram --bot-token xxx --chat-id yyy [--endpoint https://...]
@@ -288,12 +284,8 @@ my-website/
       index.md
       manifest.json
       docs/
-    actions/
-      .venv/
-      *.py
     vilas/
     logs/
-      review-queue.json
     chats/
       <session-id>.json
       telegram.json
@@ -301,7 +293,7 @@ my-website/
     widget.js
 ```
 
-`.openvila/.gitignore` ignores local cache/runtime artifacts (logs, action venv, python cache), while keeping editable knowledge and action files available.
+`.openvila/.gitignore` ignores local log and Python cache artifacts while keeping editable configuration and knowledge files available.
 
 ## LLM Environment
 
@@ -325,7 +317,7 @@ If missing and you are in TTY, OpenVila asks for input and saves values into `.o
 
 ## Channel Configuration
 
-Channels receive owner notifications when a chat action is waiting for approval.
+Channels receive owner notifications when a visitor requests human support.
 
 ### Telegram
 
@@ -404,17 +396,6 @@ If you do not use `npm link`, replace `openvila` with `node ../../src/index.js` 
 
 The Flask demo creates and seeds `data/blog.db` when it starts. The WordPress-style demo loads `sql/init.sql` into MySQL and exposes database-backed posts at `/posts.php`; it is useful for validating database discovery and scanning. See the README in each demo directory for routes, local-MySQL setup, and framework-specific troubleshooting.
 
-## Security Model
-
-- Action files can only be created by owner via CLI (`/action create`).
-- User action requests from chat are queued as `pending`.
-- Owner must approve requests using owner token APIs.
-
-`/run` prints owner token for:
-- `GET /owner/requests`
-- `POST /owner/approve`
-- `POST /owner/reject`
-
 ## Publishing
 
 GitHub Actions publishes npm releases through the Trusted Publishing workflow at `.github/workflows/publish-npm.yml`. npm trusted publishers are configured on an existing package, so publish the first version manually, then configure a trusted publisher for package `openvila` with repository `okosioc/openvila` and workflow file `publish-npm.yml`.
@@ -423,7 +404,10 @@ To release, update `package.json` to the target version, commit the change, then
 
 ## TODO
 
-- Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
-- Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
-- For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
-- Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.
+- [ ] Add lightweight Markdown rendering in the Widget for bold text, lists, and links.
+- [ ] Let the Widget customize visitor-message bubble backgrounds and show message timestamps.
+- [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
+- [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
+- [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
+- [ ] Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.
+- [ ] Let `/run` send a daily summary report of all visitor questions and Vila answers from that day.

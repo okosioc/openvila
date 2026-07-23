@@ -206,7 +206,6 @@ async function createChatService(options = {}) {
 
   const config = defaultConfig();
   config.run.port = await availablePort();
-  config.run.owner_token = "owner-test-token";
   config.channels.telegram = options.telegram || null;
   if (options.welcomeMessages) {
     config.chat.welcome_message = options.welcomeMessages;

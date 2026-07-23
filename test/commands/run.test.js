@@ -60,7 +60,6 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
         startCalls.push({ cwd, config, options });
         return {
           port: options.port,
-          owner_token: "owner-token",
           telegram_polling: false,
           close: async () => {
             closeCalls += 1;
@@ -109,7 +108,6 @@ test("runRun lets the command port override the runtime configuration", async ()
         selectedPort = options.port;
         return {
           port: options.port,
-          owner_token: "owner-token",
           telegram_polling: true,
           close: async () => undefined,
         };

@@ -24,9 +24,6 @@ function commandSuggestions(locale) {
     { cmd: "/scan --reset", desc: pick(locale, "重建扫描计划并完整重建知识库", "regenerate scan plan and fully rebuild knowledge") },
     { cmd: "/scan --no-db", desc: pick(locale, "跳过数据库规划和查询", "skip database planning and queries") },
     { cmd: "/scan --no-remote", desc: pick(locale, "跳过 sitemap 规划和抓取", "skip sitemap planning and crawling") },
-    { cmd: "/action list", desc: pick(locale, "查看 actions", "list actions") },
-    { cmd: "/action create <name>", desc: pick(locale, "创建 action", "create action") },
-    { cmd: "/action pending", desc: pick(locale, "查看待审批请求", "list pending requests") },
     { cmd: "/vila list", desc: pick(locale, "查看精灵列表", "list installed vilas") },
     { cmd: "/channel list", desc: pick(locale, "查看通道配置", "show channel config") },
     { cmd: "/run", desc: pick(locale, "启动聊天服务", "start chat service") },
@@ -61,7 +58,7 @@ function statusText(locale, ready) {
 function helpLines(locale) {
   return [
     pick(locale, "commands (prefix with /):", "commands (prefix with /):"),
-    "  /scan /action ... /vila ... /channel ... /run",
+    "  /scan /vila ... /channel ... /run",
     "  /help /exit",
   ];
 }

@@ -63,8 +63,6 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `预览: http://127.0.0.1:${service.port}/widget`,
         `聊天接口: POST http://127.0.0.1:${service.port}/openvila/chat`,
         `Telegram 人工接管轮询: ${service.telegram_polling ? "已启用" : "未启用"}`,
-        `站长审核 token: ${service.owner_token}`,
-        `站长审核接口: GET /owner/requests, POST /owner/approve`,
         "按 Ctrl+C 退出",
       ].join("\n"),
       [
@@ -74,8 +72,6 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `Preview: http://127.0.0.1:${service.port}/widget`,
         `Chat API: POST http://127.0.0.1:${service.port}/openvila/chat`,
         `Telegram handoff polling: ${service.telegram_polling ? "enabled" : "disabled"}`,
-        `Owner token: ${service.owner_token}`,
-        `Owner APIs: GET /owner/requests, POST /owner/approve`,
         "Press Ctrl+C to stop",
       ].join("\n"),
     ),

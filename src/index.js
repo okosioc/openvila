@@ -2,7 +2,6 @@
 
 import process from "node:process";
 import readline from "node:readline";
-import { runActionCommand } from "./commands/action.js";
 import { runChannel } from "./commands/channel.js";
 import { runRun } from "./commands/run.js";
 import { runScan } from "./commands/scan.js";
@@ -22,7 +21,7 @@ import { normalizeCommandName, parseOptionArgs, splitArgs } from "./utils/args.j
 import { exists } from "./utils/fs.js";
 import { cliVersion } from "./utils/version.js";
 
-const COMMANDS_NEED_RUNTIME = new Set(["scan", "action", "vila", "channel", "run"]);
+const COMMANDS_NEED_RUNTIME = new Set(["scan", "vila", "channel", "run"]);
 
 function helpText(locale) {
   return pick(
@@ -33,7 +32,6 @@ function helpText(locale) {
       "命令:",
       "  /ui                         进入 Ink 交互管理终端",
       "  /scan                       扫描并编译知识库",
-      "  /action ...                 管理动作脚本",
       "  /vila ...                   安装/管理精灵",
       "  /channel ...                配置 Telegram/飞书",
       "  /run [--port 9394] [--fork] 启动聊天服务",
@@ -48,7 +46,6 @@ function helpText(locale) {
       "Commands:",
       "  /ui                         Open Ink interactive manager",
       "  /scan                       Scan and compile knowledge base",
-      "  /action ...                 Manage actions",
       "  /vila ...                   Manage vilas",
       "  /channel ...                Configure Telegram/Feishu",
       "  /run [--port 9394] [--fork] Start chat service",
@@ -396,11 +393,6 @@ async function executeCommand(ctx, tokens) {
 
   if (command === "scan") {
     await runScan(ctx, argv);
-    return true;
-  }
-
-  if (command === "action") {
-    await runActionCommand(ctx, argv);
     return true;
   }
 

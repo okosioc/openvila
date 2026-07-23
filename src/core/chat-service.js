@@ -3,7 +3,6 @@ import http from "node:http";
 import path from "node:path";
 import crypto from "node:crypto";
 import { URL } from "node:url";
-import { approveReviewItem, listActions, listReviewQueue, queueActionReview, rejectReviewItem } from "./actions.js";
 import { hasTelegramChannel, notifyChannels, sendTelegramMessage } from "./channels.js";
 import {
   addTelegramReplyMapping,
@@ -62,7 +61,7 @@ function allowSameHostCors(req, res) {
 
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-OpenVila-Owner-Token");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   res.setHeader("Vary", "Origin");
   return true;
 }
@@ -803,28 +802,6 @@ async function requestHumanSupport(cwd, config, paths, identity, message, req, r
   return { answer, handoff, system_message: systemMessage?.role === "handoff" ? systemMessage : null };
 }
 
-function parseActionRequest(message) {
-  const matched = message.trim().match(/^\/action\s+([a-zA-Z_][a-zA-Z0-9_\-]*)(?:\s+(.*))?$/s);
-  if (!matched) {
-    return null;
-  }
-
-  const [, actionName, payloadText] = matched;
-  let payload = {};
-  if (payloadText && payloadText.trim()) {
-    try {
-      payload = JSON.parse(payloadText.trim());
-    } catch {
-      payload = { text: payloadText.trim() };
-    }
-  }
-
-  return {
-    actionName,
-    payload,
-  };
-}
-
 function isHumanSupportRequest(message) {
   const lower = message.toLowerCase();
   const keywords = ["人工", "客服", "站长", "human", "operator", "support"];
@@ -842,12 +819,6 @@ function handoffRoleLabel(role) {
     return "System";
   }
   return "Vila";
-}
-
-function getAuthToken(req) {
-  const auth = req.headers.authorization || "";
-  const matched = auth.match(/^bearer\s+(.+)$/i);
-  return matched ? matched[1] : null;
 }
 
 function truncateText(value, maxChars) {
@@ -1143,25 +1114,6 @@ export async function startChatService(cwd, config, options = {}) {
       return;
     }
 
-    const actionReq = parseActionRequest(message);
-    if (actionReq) {
-      const actions = await listActions(cwd);
-      if (!actions.includes(actionReq.actionName)) {
-        await appendAssistantReply(identity, `Action ${actionReq.actionName} does not exist.`, { req, route, mode: "action" });
-        return;
-      }
-
-      const queued = await queueActionReview(cwd, actionReq.actionName, actionReq.payload, {
-        source: "chat",
-        remote: req?.socket?.remoteAddress,
-      });
-      const notifyText = `OpenVila action pending approval\n- id: ${queued.id}\n- action: ${queued.action}`;
-      await notifyChannels(config, notifyText).catch(() => undefined);
-      const actionAnswerText = `Action request submitted for owner approval. request_id=${queued.id}`;
-      await appendAssistantReply(identity, actionAnswerText, { req, route, mode: "action" });
-      return;
-    }
-
     if (isHumanSupportRequest(message)) {
       const support = await requestHumanSupport(cwd, config, paths, identity, message, req, route);
       if (support.system_message) {
@@ -1337,56 +1289,6 @@ export async function startChatService(cwd, config, options = {}) {
         return;
       }
 
-      const token = getAuthToken(req);
-      const ownerToken = config.run.owner_token;
-      const ownerAuthorized = token && ownerToken && token === ownerToken;
-
-      if (req.method === "GET" && url.pathname === "/owner/requests") {
-        if (!ownerAuthorized) {
-          sendJson(res, 401, { error: "Unauthorized" });
-          return;
-        }
-
-        const status = url.searchParams.get("status") || null;
-        const queue = await listReviewQueue(cwd, status);
-        sendJson(res, 200, { ok: true, items: queue });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/owner/approve") {
-        if (!ownerAuthorized) {
-          sendJson(res, 401, { error: "Unauthorized" });
-          return;
-        }
-
-        const body = await parseBody(req);
-        if (!body.request_id) {
-          sendJson(res, 400, { error: "request_id required" });
-          return;
-        }
-
-        const updated = await approveReviewItem(cwd, body.request_id);
-        sendJson(res, 200, { ok: true, item: updated });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/owner/reject") {
-        if (!ownerAuthorized) {
-          sendJson(res, 401, { error: "Unauthorized" });
-          return;
-        }
-
-        const body = await parseBody(req);
-        if (!body.request_id) {
-          sendJson(res, 400, { error: "request_id required" });
-          return;
-        }
-
-        const updated = await rejectReviewItem(cwd, body.request_id, body.reason || "rejected");
-        sendJson(res, 200, { ok: true, item: updated });
-        return;
-      }
-
       sendJson(res, 404, { error: "Not found" });
     } catch (error) {
       if (res.headersSent) {
@@ -1456,7 +1358,6 @@ export async function startChatService(cwd, config, options = {}) {
 
   return {
     port,
-    owner_token: config.run.owner_token,
     telegram_polling: telegramPolling.enabled,
     close: async () => {
       await telegramPolling.close();
