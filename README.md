@@ -170,6 +170,8 @@ Database scan behavior:
 - `index.md`: generated index with `Frequent Customer Concerns` and `All Documents` sections.
 - `manifest.json`: generated source hashes, source-to-document mapping, `index_map`, frequent source list, and LLM call stats; do not edit it.
 
+During HTML extraction, safe anchor links are retained as Markdown links (`[text](url)`); unsafe protocols such as `javascript:` are discarded.
+
 Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by `scan.db_auto_query_limit` in `config.yaml` (default `80`). Doc compilation batches use `scan.llm_compile_batch_chars` (default `100000`).
 
 - all CLI logs are written to daily rotated logs: `.openvila/logs/debug-YYYY-MM-DD.log`
@@ -404,9 +406,11 @@ To release, update `package.json` to the target version, commit the change, then
 
 ## TODO
 
-- [ ] Add lightweight Markdown rendering in the Widget for bold text, lists, and links.
-- [ ] Let the Widget customize visitor-message bubble backgrounds and show message timestamps.
+- [x] Add lightweight Markdown rendering in the Widget for bold text and links.
+- [x] Let the Widget use a 33%-opacity configured color for visitor-message bubble backgrounds and show message timestamps.
+- [ ] Let the Widget use browser notifications to alert visitors when human support replies.
 - [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
+- [ ] Add Skills that call existing website APIs, such as search.
 - [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
 - [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
 - [ ] Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.

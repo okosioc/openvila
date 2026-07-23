@@ -6,15 +6,16 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 class FakeElement {
-  constructor(document) {
+  constructor(document, tagName = "") {
     this.document = document;
+    this.tagName = tagName;
     this.children = [];
     this.listeners = new Map();
     this.style = {};
     this.value = "";
     this.disabled = false;
     this.placeholder = "";
-    this.textContent = "";
+    this._textContent = "";
     this.scrollTop = 0;
     this.scrollHeight = 0;
   }
@@ -30,6 +31,7 @@ class FakeElement {
 
   set innerHTML(value) {
     this._innerHTML = value;
+    this.children = [];
     if (!String(value).includes("openvila-form")) {
       return;
     }
@@ -42,6 +44,18 @@ class FakeElement {
 
   get innerHTML() {
     return this._innerHTML;
+  }
+
+  set textContent(value) {
+    this._textContent = String(value || "");
+    this.children = [];
+  }
+
+  get textContent() {
+    if (this.children.length > 0) {
+      return this.children.map((child) => child.textContent).join("");
+    }
+    return this._textContent;
   }
 
   appendChild(child) {
@@ -86,8 +100,8 @@ class FakeDocument {
     return [this.currentScript];
   }
 
-  createElement() {
-    return new FakeElement(this);
+  createElement(tagName) {
+    return new FakeElement(this, tagName);
   }
 }
 
@@ -279,8 +293,38 @@ test("widget localizes system labels for Chinese visitors", async () => {
   });
 
   const message = harness.document.getElementById("openvila-messages").children.at(-1);
-  assert.equal(message.children[0].textContent, "系统");
+  assert.match(message.children[0].textContent, /^系统 · \d{2}:\d{2}$/);
   assert.equal(message.children[1].textContent, "人工客服已接入。");
+});
+
+test("widget renders safe lightweight Markdown with visitor bubble metadata", async () => {
+  const harness = await loadWidget({ scriptAttributes: { "data-color": "#0f766e" } });
+  const eventSource = harness.eventSources[0];
+  const timestamp = new Date();
+  const expectedTime = `${String(timestamp.getHours()).padStart(2, "0")}:${String(timestamp.getMinutes()).padStart(2, "0")}`;
+
+  eventSource.emit("message", {
+    data: JSON.stringify({
+      id: "visitor-markdown",
+      role: "user",
+      content: "Read **this** at [the guide](https://example.com/guide)\n- keep this text",
+      ts: timestamp.toISOString(),
+    }),
+  });
+
+  const message = harness.document.getElementById("openvila-messages").children.at(-1);
+  const body = message.children[1];
+  const bold = body.children.find((child) => child.tagName === "strong");
+  const link = body.children.find((child) => child.tagName === "a");
+
+  assert.equal(message.children[0].textContent, `You · ${expectedTime}`);
+  assert.equal(body.style.background, "rgba(15, 118, 110, 0.33)");
+  assert.equal(body.style.border, "1px solid rgba(15, 118, 110, 0.33)");
+  assert.equal(bold.textContent, "this");
+  assert.equal(link.textContent, "the guide");
+  assert.equal(link.href, "https://example.com/guide");
+  assert.equal(link.target, "_blank");
+  assert.match(body.textContent, /- keep this text/);
 });
 
 test("widget close button hides the panel and closes the event stream", async () => {

@@ -15,7 +15,7 @@ import {
   toPosixPath,
   writeText,
 } from "../utils/fs.js";
-import { fetchText, parseSitemapLocs, stripHtml } from "../utils/net.js";
+import { fetchText, htmlAnchorsToMarkdown, parseSitemapLocs, stripHtml } from "../utils/net.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
 import { ensureRuntime, loadConfig, resolveLlmSettings, runtimePaths } from "./runtime.js";
 import {
@@ -458,7 +458,7 @@ async function collectFilesystemDocs(cwd, matchedPaths) {
       continue;
     }
 
-    const cleaned = cleanTextForPrompt(String(content || ""), 28000);
+    const cleaned = cleanTextForPrompt(htmlAnchorsToMarkdown(String(content || "")), 28000);
     docs.push({
       id: `file:${relative}`,
       source: relative,
@@ -718,7 +718,7 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
     {
       role: "system",
       content:
-        'You are a website knowledge document compiler. For each input document, produce structured markdown-ready fields. Return JSON only: {"docs":[{"id":"d1","title":"...","tags":["..."],"summary":"...","body":"...","is_frequently_asked":true}]}. Requirements: remove all HTML tags; preserve user-visible factual information; redact unsafe/executable snippets; body should be concise but complete for support Q&A; set is_frequently_asked=true when this document addresses common customer concerns (pricing, payment, plan, trial, refund, terms, privacy, shipping, support, account, troubleshooting, onboarding, FAQ).',
+        'You are a website knowledge document compiler. For each input document, produce structured markdown-ready fields. Return JSON only: {"docs":[{"id":"d1","title":"...","tags":["..."],"summary":"...","body":"...","is_frequently_asked":true}]}. Requirements: remove all HTML tags; preserve user-visible factual information and Markdown links provided in the input; never invent URLs; redact unsafe/executable snippets; body should be concise but complete for support Q&A; set is_frequently_asked=true when this document addresses common customer concerns (pricing, payment, plan, trial, refund, terms, privacy, shipping, support, account, troubleshooting, onboarding, FAQ).',
     },
     {
       role: "user",
@@ -733,7 +733,7 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
         "- Every input id must appear exactly once in docs.",
         "- tags should be short keywords.",
         "- summary should be 1-2 sentences.",
-        "- body must be plain markdown text without HTML tags.",
+        "- body must be plain markdown text without HTML tags; preserve provided Markdown links and never invent URLs.",
         "- is_frequently_asked must be boolean true/false.",
       ].join("\n"),
     },

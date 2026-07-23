@@ -64,8 +64,24 @@
     return protocol + "//" + host + (port ? ":" + port : "");
   }
 
+  function thirdOpacityColor(value) {
+    var color = String(value || "").trim();
+    var matched = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (!matched) {
+      return "rgba(37, 99, 235, 0.33)";
+    }
+
+    var hex = matched[1];
+    if (hex.length === 3) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    }
+
+    return "rgba(" + parseInt(hex.slice(0, 2), 16) + ", " + parseInt(hex.slice(2, 4), 16) + ", " + parseInt(hex.slice(4, 6), 16) + ", 0.33)";
+  }
+
   var widgetConfig = resolveConfig();
   var apiBase = buildApiBase(widgetConfig);
+  var visitorBubbleBackground = thirdOpacityColor(widgetConfig.color || "#2563eb");
   var SESSION_ID_KEY = "openvila_session_id";
   var CHAT_HISTORY_LIMIT = 200;
   var CHAT_HISTORY_REFRESH_MS = 3000;
@@ -131,6 +147,75 @@
     return chinese ? "系统" : "System";
   }
 
+  function formatMessageTime(timestamp) {
+    var date = new Date(timestamp || Date.now());
+    if (!Number.isFinite(date.getTime())) return "";
+    return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
+  }
+
+  function messageHeading(role, timestamp) {
+    var time = formatMessageTime(timestamp);
+    return time ? role + " · " + time : role;
+  }
+
+  function appendPlainText(node, text) {
+    if (!text) return;
+    var span = document.createElement("span");
+    span.textContent = text;
+    node.appendChild(span);
+  }
+
+  function appendLink(node, label, value) {
+    var url;
+    try {
+      url = new URL(value, window.location.href);
+    } catch (error) {
+      return false;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return false;
+    }
+
+    var link = document.createElement("a");
+    link.href = url.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.style.color = "#2563eb";
+    link.style.textDecoration = "underline";
+    link.textContent = label;
+    node.appendChild(link);
+    return true;
+  }
+
+  function renderMessageText(node, value) {
+    var text = String(value || "");
+    node.textContent = "";
+    var pattern = /\*\*([^*\n]+)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<]+)/g;
+    var cursor = 0;
+    var matched = pattern.exec(text);
+
+    while (matched) {
+      appendPlainText(node, text.slice(cursor, matched.index));
+
+      if (matched[1]) {
+        var bold = document.createElement("strong");
+        bold.textContent = matched[1];
+        node.appendChild(bold);
+      } else if (matched[2]) {
+        if (!appendLink(node, matched[2], matched[3])) {
+          appendPlainText(node, matched[0]);
+        }
+      } else if (!appendLink(node, matched[4], matched[4])) {
+        appendPlainText(node, matched[0]);
+      }
+
+      cursor = matched.index + matched[0].length;
+      matched = pattern.exec(text);
+    }
+
+    appendPlainText(node, text.slice(cursor));
+  }
+
   function scrollMessagesToBottom() {
     var list = document.getElementById("openvila-messages");
     if (!list) return;
@@ -192,7 +277,8 @@
   button.style.zIndex = "2147483647";
   button.style.boxShadow = "0 12px 28px rgba(37,99,235,.4)";
 
-  function append(role, text) {
+  function append(role, text, options) {
+    var messageOptions = options || {};
     var list = document.getElementById("openvila-messages");
     if (!list) return null;
     var item = document.createElement("div");
@@ -200,14 +286,15 @@
     var roleNode = document.createElement("div");
     roleNode.style.fontSize = "12px";
     roleNode.style.color = "#64748b";
-    roleNode.textContent = role;
     var bodyNode = document.createElement("div");
-    bodyNode.style.background = "#f8fafc";
-    bodyNode.style.border = "1px solid #e2e8f0";
+    var isVisitor = messageOptions.role === "user";
+    bodyNode.style.background = isVisitor ? visitorBubbleBackground : "#f8fafc";
+    bodyNode.style.border = isVisitor ? "1px solid " + visitorBubbleBackground : "1px solid #e2e8f0";
     bodyNode.style.padding = "8px";
     bodyNode.style.borderRadius = "8px";
     bodyNode.style.whiteSpace = "pre-wrap";
-    bodyNode.textContent = text;
+    roleNode.textContent = messageHeading(role, messageOptions.ts);
+    renderMessageText(bodyNode, text);
     item.appendChild(roleNode);
     item.appendChild(bodyNode);
     list.appendChild(item);
@@ -215,8 +302,11 @@
 
     return {
       setText: function (nextText) {
-        bodyNode.textContent = String(nextText || "");
+        renderMessageText(bodyNode, nextText);
         list.scrollTop = list.scrollHeight;
+      },
+      setTimestamp: function (nextTimestamp) {
+        roleNode.textContent = messageHeading(role, nextTimestamp);
       }
     };
   }
@@ -265,6 +355,7 @@
     var streamed = messageId ? streamingMessageViews[messageId] : null;
     if (streamed) {
       streamed.setText(content);
+      streamed.setTimestamp(item.ts);
       delete streamingMessageViews[messageId];
       if (messageId) renderedMessageIds[messageId] = true;
       if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
@@ -277,7 +368,7 @@
     }
     if (messageId) renderedMessageIds[messageId] = true;
     if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
-    append(roleLabel(item.role), content);
+    append(roleLabel(item.role), content, { role: role, ts: item.ts });
 
     completeReplyWait(item, role);
   }
@@ -302,11 +393,15 @@
 
     var streamed = streamingMessageViews[messageId];
     if (!streamed) {
-      var view = append(roleLabel(item.role || "assistant"), "");
+      var view = append(roleLabel(item.role || "assistant"), "", {
+        role: String(item.role || "assistant"),
+        ts: new Date().toISOString(),
+      });
       if (!view) return;
       streamed = {
         content: "",
         setText: view.setText,
+        setTimestamp: view.setTimestamp,
       };
       streamingMessageViews[messageId] = streamed;
     }
@@ -404,7 +499,8 @@
       id: "local-" + clientMessageId,
       client_message_id: clientMessageId,
       role: "user",
-      content: text
+      content: text,
+      ts: new Date().toISOString()
     });
 
     try {
@@ -412,7 +508,7 @@
     } catch (err) {
       setWaitingForReply(false);
       var chinese = VISITOR_LOCALE.toLowerCase().startsWith("zh");
-      append(chinese ? "系统" : "System", (chinese ? "请求失败：" : "Request failed: ") + err.message);
+      append(chinese ? "系统" : "System", (chinese ? "请求失败：" : "Request failed: ") + err.message, { ts: new Date().toISOString() });
     }
   });
 
