@@ -15,7 +15,7 @@ import {
   toPosixPath,
   writeText,
 } from "../utils/fs.js";
-import { fetchText, htmlAnchorsToMarkdown, parseSitemapLocs, stripHtml } from "../utils/net.js";
+import { extractHtmlLinks, fetchText, htmlAnchorsToMarkdown, parseSitemapLocs, stripHtml } from "../utils/net.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
 import { ensureRuntime, loadConfig, resolveLlmSettings, runtimePaths } from "./runtime.js";
 import {
@@ -126,7 +126,7 @@ function docStoredPathForDoc(doc) {
 function sourceHashForDoc(doc) {
   return crypto
     .createHash("sha1")
-    .update(`${doc.origin}\n${doc.source}\n${doc.content}`)
+    .update(`${doc.origin}\n${doc.source}\n${doc.hash_content ?? doc.content}`)
     .digest("hex");
 }
 
@@ -215,7 +215,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
         "- Exclude style/script/media files: *.css, *.scss, *.sass, *.less, *.js.map, *.css.map, *.min.js, *.min.css, icons/svgs/images/fonts/videos.",
         "- Exclude lock/generated files: package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lockb, poetry.lock, composer.lock.",
         "- Exclude infra/system/test tables by default: migrations, alembic_version, sessions, cache, jobs, logs, audit tables.",
-        "- Do NOT pad file count. It is valid to return fewer than 12 if fewer relevant files exist.",
+        "- Return at most 12 knowledge_files and at most 6 knowledge_tables. Do NOT pad either list.",
         "- If uncertain whether a file/table carries user-facing business knowledge, exclude it.",
       ].join("\n"),
     },
@@ -223,11 +223,14 @@ async function pickKnowledgesByLlm(config, options = {}) {
 
   const completion = await chatCompletion(config, messages, {
     temperature: 0,
-    maxTokens: 1600,
+    maxTokens: intRange(config?.scan?.llm_plan_max_tokens, 1000, 16000, 4800),
     trace: "scan:file_planning",
   });
   if (!completion.ok) {
     throw new Error(`LLM file planning failed: ${completion.error}`);
+  }
+  if (completion.raw?.choices?.[0]?.finish_reason === "length") {
+    throw new Error("LLM file planning response was truncated (finish_reason=length).");
   }
 
   const parsed = extractJsonObject(completion.content);
@@ -245,7 +248,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
     (Array.isArray(parsed?.knowledge_files) ? parsed.knowledge_files : [])
       .map((item) => toPosixPath(String(item || "").trim().replace(/^\.\//, "")))
       .filter((item) => available.has(item)),
-  );
+  ).slice(0, 12);
   const tableKeyMap = new Map();
   const tableNameMap = new Map();
   for (const item of tableCandidates) {
@@ -269,7 +272,7 @@ async function pickKnowledgesByLlm(config, options = {}) {
         return tableKeyMap.get(normalized) || tableNameMap.get(normalized) || "";
       })
       .filter(Boolean),
-  );
+  ).slice(0, 6);
 
   if (knowledgeFiles.length === 0 && selectedTableKeys.length === 0) {
     throw new Error("LLM file planning returned no knowledge_files/knowledge_tables.");
@@ -458,12 +461,16 @@ async function collectFilesystemDocs(cwd, matchedPaths) {
       continue;
     }
 
-    const cleaned = cleanTextForPrompt(htmlAnchorsToMarkdown(String(content || "")), 28000);
+    const rawContent = String(content || "");
+    const cleaned = cleanTextForPrompt(stripHtml(rawContent), 28000);
+    const hashContent = cleanTextForPrompt(htmlAnchorsToMarkdown(rawContent), 28000);
     docs.push({
       id: `file:${relative}`,
       source: relative,
       origin: "filesystem",
       content: cleaned,
+      hash_content: hashContent,
+      links: extractHtmlLinks(rawContent),
     });
   }
   return docs;
@@ -564,6 +571,7 @@ async function collectRemoteDocs(remotePlan, log) {
     try {
       const html = await fetchText(url, 15000);
       const text = cleanTextForPrompt(stripHtml(html), 16000);
+      const hashContent = cleanTextForPrompt(stripHtml(htmlAnchorsToMarkdown(html)), 16000);
       if (!text) continue;
 
       docs.push({
@@ -571,6 +579,8 @@ async function collectRemoteDocs(remotePlan, log) {
         source: url,
         origin: "remote",
         content: text,
+        hash_content: hashContent,
+        links: extractHtmlLinks(html),
       });
     } catch (error) {
       warnings.push(`remote page failed (${url}): ${error.message}`);
@@ -718,7 +728,7 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
     {
       role: "system",
       content:
-        'You are a website knowledge document compiler. For each input document, produce structured markdown-ready fields. Return JSON only: {"docs":[{"id":"d1","title":"...","tags":["..."],"summary":"...","body":"...","is_frequently_asked":true}]}. Requirements: remove all HTML tags; preserve user-visible factual information and Markdown links provided in the input; never invent URLs; redact unsafe/executable snippets; body should be concise but complete for support Q&A; set is_frequently_asked=true when this document addresses common customer concerns (pricing, payment, plan, trial, refund, terms, privacy, shipping, support, account, troubleshooting, onboarding, FAQ).',
+        'You are a website knowledge document compiler. For each input document, produce structured markdown-ready fields. Return JSON only: {"docs":[{"id":"d1","title":"...","tags":["..."],"summary":"...","body":"...","is_frequently_asked":true}]}. Requirements: remove all HTML tags; preserve user-visible factual information and complete Markdown links with provided URLs; never invent URLs; do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and omit claims that depend on them; redact unsafe/executable snippets; body should be concise but complete for support Q&A; set is_frequently_asked=true when this document addresses common customer concerns (pricing, payment, plan, trial, refund, terms, privacy, shipping, support, account, troubleshooting, onboarding, FAQ).',
     },
     {
       role: "user",
@@ -733,7 +743,7 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
         "- Every input id must appear exactly once in docs.",
         "- tags should be short keywords.",
         "- summary should be 1-2 sentences.",
-        "- body must be plain markdown text without HTML tags; preserve provided Markdown links and never invent URLs.",
+        "- body must be plain markdown text without HTML tags; preserve only complete provided Markdown links with URLs, never invent URLs, and omit unresolved template placeholders and claims that depend on them.",
         "- is_frequently_asked must be boolean true/false.",
       ].join("\n"),
     },
@@ -970,6 +980,20 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   }
 
   const nowIso = new Date().toISOString();
+  const links = [];
+  const linkKeys = new Set();
+  for (const doc of docs) {
+    for (const link of doc.links || []) {
+      const text = String(link?.text || "").trim();
+      const url = String(link?.url || "").trim();
+      const key = `${doc.source}\n${text}\n${url}`;
+      if (!text || !url || linkKeys.has(key)) {
+        continue;
+      }
+      linkKeys.add(key);
+      links.push({ source: doc.source, text, url });
+    }
+  }
 
   const previousSourceHashes = previous.sourceHashes || {};
   const previousSourceDocMap = previous.sourceDocMap || {};
@@ -1186,6 +1210,8 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   await writeText(paths.knowledgeIndex, indexMarkdown.endsWith("\n") ? indexMarkdown : `${indexMarkdown}\n`);
 
+  await writeText(paths.knowledgeLinks, `${JSON.stringify({ generated_at: nowIso, links }, null, 2)}\n`);
+
   await writeText(paths.knowledgeManifest, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return {
@@ -1219,6 +1245,30 @@ export async function loadKnowledgeIndex(cwd) {
       frequent_sources: [],
       all_sources_order: [],
     };
+  }
+}
+
+export async function loadKnowledgeLinks(cwd) {
+  const paths = runtimePaths(cwd);
+  const raw = await readTextSafe(paths.knowledgeLinks);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed?.links)) {
+      return [];
+    }
+    return parsed.links
+      .map((link) => ({
+        source: String(link?.source || "").trim(),
+        text: String(link?.text || "").trim(),
+        url: String(link?.url || "").trim(),
+      }))
+      .filter((link) => link.source && link.text && link.url);
+  } catch {
+    return [];
   }
 }
 

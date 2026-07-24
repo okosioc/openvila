@@ -38,6 +38,7 @@ export function runtimePaths(cwd) {
     widget: path.join(base, "widget.html"),
     widgetScript: path.join(base, "widget.js"),
     knowledgeIndex: path.join(base, "knowledges", "index.md"),
+    knowledgeLinks: path.join(base, "knowledges", "links.json"),
     knowledgeManifest: path.join(base, "knowledges", "manifest.json"),
   };
 }
@@ -71,6 +72,7 @@ export function defaultConfig() {
     scan: {
       llm_candidate_limit: 420,
       llm_table_candidate_limit: 260,
+      llm_plan_max_tokens: 4800,
       llm_compile_batch_chars: 100000,
       llm_compile_doc_chars: 18000,
       llm_compile_max_tokens: 4800,

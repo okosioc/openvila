@@ -275,7 +275,7 @@ export async function chatCompletion(config, messages, overrides = {}) {
 
     return {
       ok: true,
-      content: cleanTextForPrompt(String(content), 20000),
+      content: messageContentToText(content).trim(),
       raw: json,
     };
   } catch (error) {
@@ -368,7 +368,7 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
         };
       }
 
-      const normalized = cleanTextForPrompt(String(content), 20000);
+      const normalized = messageContentToText(content).trim();
       onDelta(normalized);
       emitOutputLog(prefixedContentBlock(llmPrefix, normalized));
       return {
@@ -451,7 +451,7 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
       };
     }
 
-    const finalText = cleanTextForPrompt(accumulated, 20000);
+    const finalText = accumulated.trim();
     emitOutputLog(prefixedContentBlock(llmPrefix, finalText));
     return {
       ok: true,

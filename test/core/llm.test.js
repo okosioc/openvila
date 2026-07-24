@@ -74,6 +74,38 @@ async function startProviderErrorServer() {
   };
 }
 
+async function startContentServer(content) {
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(
+      JSON.stringify({
+        choices: [
+          {
+            finish_reason: "stop",
+            message: { role: "assistant", content },
+          },
+        ],
+      }),
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("LLM test server did not expose a TCP port");
+  }
+
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    close: () => {
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+      return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    },
+  };
+}
+
 for (const [name, completion] of [
   ["chatCompletion", chatCompletion],
   ["chatCompletionStream JSON fallback", chatCompletionStream],
@@ -107,6 +139,26 @@ for (const [name, completion] of [
     assert.doesNotMatch(result.error, /diagnostic-end/);
   });
 }
+
+test("chatCompletion keeps a successful response longer than 20000 characters", async (context) => {
+  const content = JSON.stringify({ knowledge_files: ["x".repeat(21000)] });
+  const server = await startContentServer(content);
+  context.after(() => server.close());
+
+  const result = await chatCompletion(
+    {
+      llm: {
+        endpoint: server.endpoint,
+        api_key: "test-key",
+        model: "test-model",
+      },
+    },
+    [{ role: "user", content: "Plan files" }],
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.content, content);
+});
 
 for (const [name, completion] of [
   ["chatCompletion", chatCompletion],

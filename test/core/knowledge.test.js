@@ -8,7 +8,7 @@ import path from "node:path";
 import test from "node:test";
 import sqlite3 from "sqlite3";
 import { buildKnowledgeBase, prepareKnowledgeScanPlan, saveKnowledgeScanPlan } from "../../src/core/knowledge.js";
-import { defaultConfig } from "../../src/core/runtime.js";
+import { defaultConfig, initializeRuntime, runtimePaths } from "../../src/core/runtime.js";
 import { collectAutoDatabaseCandidates, generatedScanPlan, parseKnowledgeScanPlan, stringifyKnowledgeScanPlan } from "../../src/core/scan-plan.js";
 import { resolveDatabaseTarget } from "../../src/utils/db.js";
 
@@ -42,22 +42,38 @@ async function createSqliteDatabase(filePath) {
   });
 }
 
-async function startLlmServer() {
+async function startLlmServer(options = {}) {
   const requests = [];
   const server = http.createServer(async (request, response) => {
-    requests.push(await readRequestBody(request));
+    const body = await readRequestBody(request);
+    requests.push(body);
+    const isDocCompiler = String(body?.messages?.[0]?.content || "").includes("website knowledge document compiler");
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(
       JSON.stringify({
         choices: [
           {
+            finish_reason: options.finishReason || "stop",
             message: {
-              content: JSON.stringify({
-                framework: "static",
-                framework_signals: ["faq.html"],
-                knowledge_files: ["faq.html", "guide.md", "app.ts", "visible.draft.md"],
-                knowledge_tables: [],
-              }),
+              content: JSON.stringify(
+                isDocCompiler
+                  ? {
+                      docs: [{
+                        id: "d1",
+                        title: "FAQ",
+                        tags: ["vip"],
+                        summary: "VIP information.",
+                        body: "Read the VIP information.",
+                        is_frequently_asked: true,
+                      }],
+                    }
+                  : {
+                      framework: "static",
+                      framework_signals: ["faq.html"],
+                      knowledge_files: ["faq.html", "guide.md", "app.ts", "visible.draft.md"],
+                      knowledge_tables: [],
+                    },
+              ),
             },
           },
         ],
@@ -85,6 +101,7 @@ async function startLlmServer() {
 
 test("default scan config has no db_auto toggle", () => {
   assert.equal("db_auto" in defaultConfig().scan, false);
+  assert.equal(defaultConfig().scan.llm_plan_max_tokens, 4800);
 });
 
 test("default config has a language setting", () => {
@@ -122,12 +139,14 @@ test("prepareKnowledgeScanPlan excludes gitignored styles and multimedia candida
         api_key: "test-key",
         model: "test-model",
       },
-      scan: {},
+      scan: { llm_plan_max_tokens: 3600 },
     },
   });
 
   const prompt = llm.requests[0].messages[1].content;
   const candidates = prompt.split("Candidates:\n")[1].split("\n\nCandidate table count:")[0];
+  assert.equal(llm.requests[0].max_tokens, 3600);
+  assert.match(prompt, /at most 12 knowledge_files and at most 6 knowledge_tables/);
   assert.equal(plan.filesystem.total_candidates, 4);
   assert.equal(plan.planning_mode, "auto");
   assert.equal(plan.llm_model, "test-model");
@@ -147,6 +166,30 @@ test("prepareKnowledgeScanPlan excludes gitignored styles and multimedia candida
   const scanPlanPath = await saveKnowledgeScanPlan(cwd, plan);
   assert.equal(path.basename(scanPlanPath), "scan-plan");
   assert.match(await fs.readFile(scanPlanPath, "utf8"), /^file:\/\/faq\.html/m);
+});
+
+test("prepareKnowledgeScanPlan reports a truncated planning response", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer({ finishReason: "length" });
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+  await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+
+  await assert.rejects(
+    prepareKnowledgeScanPlan(cwd, {
+      config: {
+        llm: {
+          endpoint: llm.endpoint,
+          api_key: "test-key",
+          model: "test-model",
+        },
+        scan: {},
+      },
+    }),
+    /LLM file planning response was truncated \(finish_reason=length\)/,
+  );
 });
 
 test("prepareKnowledgeScanPlan uses an editable scan plan without LLM planning", async (context) => {
@@ -188,8 +231,11 @@ test("prepareKnowledgeScanPlan uses an editable scan plan without LLM planning",
 test("buildKnowledgeBase records no planning call when reusing an unchanged scan plan", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   context.after(() => fs.rm(cwd, { recursive: true, force: true }));
-  const content = "<h1>FAQ</h1>";
-  const sourceHash = crypto.createHash("sha1").update(`filesystem\nfaq.html\n${content}`).digest("hex");
+  const content = '<h1>FAQ</h1><a href="/dash/buy-vip">Buy VIP</a>';
+  const sourceHash = crypto
+    .createHash("sha1")
+    .update("filesystem\nfaq.html\n<h1>FAQ</h1>[Buy VIP](/dash/buy-vip)")
+    .digest("hex");
   const knowledges = path.join(cwd, ".openvila", "knowledges");
 
   await fs.mkdir(path.join(knowledges, "docs"), { recursive: true });
@@ -235,6 +281,52 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
     total: 0,
     doc_compile_batch_chars: 100000,
   });
+  assert.deepEqual(JSON.parse(await fs.readFile(runtimePaths(cwd).knowledgeLinks, "utf8")).links, [
+    { source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" },
+  ]);
+});
+
+test("buildKnowledgeBase stores anchor URLs outside the document compiler input", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  await fs.writeFile(
+    path.join(cwd, "faq.html"),
+    '<h1>FAQ</h1><p>Read <a href="/dash/buy-vip">Buy VIP</a>.</p>',
+  );
+  const config = defaultConfig();
+  config.llm = {
+    endpoint: llm.endpoint,
+    api_key: "test-key",
+    model: "test-model",
+  };
+
+  const result = await buildKnowledgeBase(cwd, {
+    config,
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: ["faq.html"] },
+      database: { queries: [] },
+      remote: { enabled: false },
+    },
+  });
+
+  const compilerRequest = llm.requests.find((request) =>
+    String(request?.messages?.[0]?.content || "").includes("website knowledge document compiler"),
+  );
+  const linkIndex = JSON.parse(await fs.readFile(runtimePaths(cwd).knowledgeLinks, "utf8"));
+
+  assert.equal(result.compiled, 1);
+  assert.match(compilerRequest.messages[1].content, /Buy VIP/);
+  assert.doesNotMatch(compilerRequest.messages[1].content, /dash\/buy-vip/);
+  assert.deepEqual(linkIndex.links, [{ source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" }]);
 });
 
 test("prepareKnowledgeScanPlan previews an in-memory edited scan plan", async (context) => {

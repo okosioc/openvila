@@ -9,7 +9,7 @@ import {
   startTelegramHandoffPolling,
 } from "./handoffs.js";
 import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
-import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
+import { loadDocContents, loadKnowledgeIndex, loadKnowledgeLinks } from "./knowledge.js";
 import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
@@ -880,7 +880,6 @@ function renderDocSelectHistory(chatHistory, limit = DOC_SELECT_HISTORY_LIMIT) {
 }
 
 async function selectDocs(cwd, config, index, question, chatHistory = []) {
-  void cwd;
   const map = index.index_map || {};
   const entries = Object.entries(map);
   const listing = entries
@@ -891,16 +890,23 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
 
   const frequentContext = extractFrequentSection(index.index_markdown || "");
   const frequentText = frequentContext || "(none)";
+  const frequentSources = new Set((index.frequent_sources || []).map((source) => String(source || "").trim()).filter(Boolean));
+  const frequentLinkCandidates = (await loadKnowledgeLinks(cwd))
+    .filter((link) => frequentSources.has(link.source))
+    .slice(0, 24);
+  const frequentLinksText = frequentLinkCandidates.length > 0
+    ? frequentLinkCandidates.map((link) => `- [${link.text}](${link.url})`).join("\n")
+    : "(none)";
   const listingText = listing || "(none)";
   const messages = [
     {
       role: "system",
       content:
-        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[]. (2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. (3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list. (4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[]. (5) When context provides a relevant Markdown link, use its URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs.",
+        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[]. (2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. (3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list. (4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[]. (5) When Frequent Customer Concern link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs. (6) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not answer from claims that depend on them.",
     },
     {
       role: "user",
-      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listingText}`,
+      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nFrequent Customer Concern link candidates:\n${frequentLinksText}\n\nDocument index:\n${listingText}`,
     },
   ];
 
@@ -973,7 +979,16 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
   }
 
   const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
-  const selectedDocs = await loadDocContents(cwd, docPaths);
+  const [selectedDocs, knowledgeLinks] = await Promise.all([loadDocContents(cwd, docPaths), loadKnowledgeLinks(cwd)]);
+  const selectedSources = new Set(
+    Object.entries(index.source_doc_map || {})
+      .filter(([, docPath]) => docPaths.includes(docPath))
+      .map(([source]) => source),
+  );
+  const linkCandidates = knowledgeLinks.filter((link) => selectedSources.has(link.source)).slice(0, 24);
+  const linkCandidatesText = linkCandidates.length > 0
+    ? linkCandidates.map((link) => `- [${link.text}](${link.url})`).join("\n")
+    : "(none)";
 
   //
   // 2. 生成答案：将用户问题、知识库索引和选中文档内容一起发送给语言模型，生成基于知识库的回答。
@@ -991,11 +1006,11 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
     {
       role: "system",
       content:
-        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. When a selected document contains a relevant Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs. Reply in the same language as user input.",
+        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. When Link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs. Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them. Reply in the same language as user input.",
     },
     {
       role: "user",
-      content: `User question:\n${message}\n\nKnowledge index:\n${indexText}\n\nSelected documents:\n${docsText}`,
+      content: `User question:\n${message}\n\nKnowledge index:\n${indexText}\n\nSelected documents:\n${docsText}\n\nLink candidates from selected documents:\n${linkCandidatesText}`,
     },
   ];
 

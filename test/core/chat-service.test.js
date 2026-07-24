@@ -221,6 +221,10 @@ async function createChatService(options = {}) {
     await fs.writeFile(
       paths.knowledgeManifest,
       `${JSON.stringify({
+        source_doc_map: {
+          "faq.html": "docs/faq.md",
+        },
+        frequent_sources: ["faq.html"],
         index_map: {
           "faq.html": {
             doc_path: "docs/faq.md",
@@ -408,6 +412,13 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
   const events = await openChatEvents(chat.baseUrl, "visitor-stream");
 
   try {
+    await fs.writeFile(
+      runtimePaths(chat.cwd).knowledgeLinks,
+      `${JSON.stringify({
+        links: [{ source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" }],
+      })}\n`,
+      "utf8",
+    );
     const response = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
@@ -429,7 +440,10 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(deltas.map((event) => event.data.delta).join(""), "Hello from Vila");
     assert.equal(llm.requests.length, 2);
     assert.equal(llm.requests[1].stream, true);
+    assert.match(llm.requests[0].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
     assert.match(llm.requests[1].messages[0].content, /link with text that fits your answer/);
+    assert.match(llm.requests[1].messages[0].content, /unresolved template placeholders/);
+    assert.match(llm.requests[1].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
 
     const session = await readSession(chat.cwd, "visitor-stream");
     assert.equal(session.messages.at(-1).content, "Hello from Vila");

@@ -31,6 +31,28 @@ function htmlAnchorLabel(value) {
     .trim();
 }
 
+export function extractHtmlLinks(html) {
+  const output = [];
+  const seen = new Set();
+
+  String(html || "").replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (match, attributes, content) => {
+    const href = htmlAnchorHref(attributes);
+    const label = htmlAnchorLabel(content);
+    if (!href || !label) {
+      return match;
+    }
+
+    const key = `${label}\n${href}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      output.push({ text: label, url: href });
+    }
+    return match;
+  });
+
+  return output;
+}
+
 export function htmlAnchorsToMarkdown(html) {
   return String(html || "").replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (match, attributes, content) => {
     const href = htmlAnchorHref(attributes);
@@ -73,13 +95,11 @@ export function parseSitemapLocs(xmlText) {
 
 export function stripHtml(html) {
   return decodeHtmlEntities(
-    htmlAnchorsToMarkdown(
-      String(html || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-    .replace(/<template[\s\S]*?<\/template>/gi, " "),
-    )
+    String(html || "")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+      .replace(/<template[\s\S]*?<\/template>/gi, " ")
       .replace(/<[^>]+>/g, " "),
   )
     .replace(/\s+/g, " ")
