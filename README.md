@@ -89,7 +89,7 @@ openvila run
 1. on the first scan, or with `--reset`, LLM identifies framework and knowledge files from candidate file list
 2. show scan scope for owner confirmation
 3. write the confirmed scope to editable `.openvila/scan-plan`; later scans reuse it without LLM source planning
-4. scan selected sources (filesystem / scan-plan database tables / optional sitemap)
+4. scan selected sources (filesystem / scan-plan database tables / optional remote pages and sitemap)
 5. default incremental diff (`added/changed/deleted/unchanged`) by source hash, unless `--reset`, then LLM batch-compiles only `added/changed` sources into `knowledges/docs/*.md` (including `is_frequently_asked`)
 6. update/remove compiled docs for changed/deleted sources, then regenerate `knowledges/index.md` from `index_map` every run:
    - first section lists only frequent customer concern docs
@@ -110,12 +110,14 @@ Every interactive scan confirmation, including scan-plan mode, accepts `e` to ed
 file://www/templates/public/terms-of-service.html
 file://www/templates/public/contact.html
 file://www/posts/*.md
+https://docs.example.com/faq
 mongodb://localhost:27017/demo::posts
 ```
 
 Each non-empty line is one scan source:
 
 - `file://<path-or-glob>`: a file path or glob relative to the project root.
+- `http://...` or `https://...`: one remote page fetched directly through the remote scan flow.
 - `<connection_url>::<table>`: one SQL table or MongoDB collection. The final `::` separates the table name, so IPv6 connection URLs work.
 
 The initial plan contains exact LLM-selected file paths. To include future files automatically, manually add a file glob:
@@ -145,6 +147,7 @@ A table (MongoDB collection) listed in the scan plan is queried on every scan, s
 
 Database scan behavior:
 - with `.openvila/scan-plan`, `/scan` uses plan mode and its listed tables
+- remote pages come from `http://` / `https://` scan-plan entries and/or the configured sitemap; `--no-remote` skips both
 - without `.openvila/scan-plan`, `/scan` uses auto mode: it discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then writes the selected sources into `.openvila/scan-plan`; `--reset` forces auto mode
 - optional auto knobs: `scan.db_auto_max_tables` (default `6`), `scan.db_auto_query_limit` (default `80`), `scan.db_auto_max_candidate_tables` (default `360`)
 - database access uses Node drivers (`sqlite3` / `mysql2` / `pg` / `mongodb`), no external DB CLI requirement
@@ -412,9 +415,11 @@ To release, update `package.json` to the target version, commit the change, then
 - [x] Add lightweight Markdown rendering in the Widget for bold text and links.
 - [x] Let the Widget use a 33%-opacity configured color for visitor-message bubble backgrounds and show message timestamps.
 - [ ] Let the Widget use browser notifications to alert visitors when human support replies.
+- [ ] Include the current page URL, logged-in visitor identity, IP address, and country in the first human-takeover notification.
 - [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
 - [ ] Add Skills that call existing website APIs, such as search.
 - [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
+- [x] Support `http://` and `https://` entries in `scan-plan` by fetching those pages through the remote scan flow.
 - [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
 - [ ] Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.
 - [ ] Let `/run` send a daily summary report of all visitor questions and Vila answers from that day.

@@ -291,6 +291,21 @@ function inferLocale(config) {
   return String(config?.language || "en");
 }
 
+function remotePlanFromConfig(config, plannedUrls = [], skipRemote = false) {
+  const sitemapUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
+  const urls = skipRemote
+    ? []
+    : unique((plannedUrls || []).map((url) => String(url || "").trim()).filter((url) => /^https?:\/\//i.test(url)));
+  const maxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
+  const maxPages = Math.max(1, Math.min(maxPagesRaw, 80));
+  return {
+    sitemap_url: sitemapUrl,
+    urls,
+    max_pages: maxPages,
+    enabled: Boolean(sitemapUrl || urls.length > 0),
+  };
+}
+
 export async function prepareKnowledgeScanPlan(cwd, options = {}) {
   const config =
     options.config ||
@@ -306,9 +321,6 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
 
   if (scanPlan) {
     const database = skipDatabase ? emptyDatabasePlan() : databasePlanFromScanPlan(cwd, config, scanPlan);
-    const remoteUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
-    const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
-    const remoteMaxPages = Math.max(1, Math.min(remoteMaxPagesRaw, 80));
     const filesystem = {
       total_candidates: relatives.length,
       matched_paths: expandScanPlanFiles(relatives, scanPlan),
@@ -322,11 +334,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
       llm_model: "",
       filesystem,
       database,
-      remote: {
-        sitemap_url: remoteUrl,
-        max_pages: remoteMaxPages,
-        enabled: Boolean(remoteUrl),
-      },
+      remote: remotePlanFromConfig(config, scanPlan.remote_urls, skipRemote),
       locale: inferLocale(config),
       scan_plan_path: runtimePaths(cwd).scanPlan,
       confirmed_scan_plan: scanPlan,
@@ -353,14 +361,7 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     ? emptyDatabasePlan()
     : buildAutoDatabasePlan(config, llmResult.selected_table_keys || [], autoDbCandidates);
 
-  const remoteUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
-  const remoteMaxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
-  const remoteMaxPages = Math.max(1, Math.min(remoteMaxPagesRaw, 80));
-  const remote = {
-    sitemap_url: remoteUrl,
-    max_pages: remoteMaxPages,
-    enabled: Boolean(remoteUrl),
-  };
+  const remote = remotePlanFromConfig(config, [], skipRemote);
 
   return {
     generated_at: new Date().toISOString(),
@@ -548,25 +549,28 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
 }
 
 async function collectRemoteDocs(remotePlan, log) {
-  if (!remotePlan.enabled || !remotePlan.sitemap_url) {
+  if (!remotePlan.enabled) {
     return { docs: [], warnings: [] };
   }
 
   const warnings = [];
   const docs = [];
+  const plannedUrls = unique((remotePlan.urls || []).map((url) => String(url || "").trim()));
+  let sitemapUrls = [];
 
-  let sitemapText = "";
-  try {
-    sitemapText = await fetchText(remotePlan.sitemap_url, 15000);
-  } catch (error) {
-    warnings.push(`sitemap fetch failed: ${error.message}`);
-    if (typeof log === "function") {
-      log(`sitemap fetch failed: ${error.message}`);
+  if (remotePlan.sitemap_url) {
+    try {
+      const sitemapText = await fetchText(remotePlan.sitemap_url, 15000);
+      sitemapUrls = parseSitemapLocs(sitemapText).slice(0, remotePlan.max_pages);
+    } catch (error) {
+      warnings.push(`sitemap fetch failed: ${error.message}`);
+      if (typeof log === "function") {
+        log(`sitemap fetch failed: ${error.message}`);
+      }
     }
-    return { docs, warnings };
   }
 
-  const urls = parseSitemapLocs(sitemapText).slice(0, remotePlan.max_pages);
+  const urls = unique([...plannedUrls, ...sitemapUrls]);
   for (const url of urls) {
     try {
       const html = await fetchText(url, 15000);
@@ -968,7 +972,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   }
 
   if (selections.remote) {
-    log(t(locale, "抓取远程 sitemap 中...", "Fetching remote sitemap..."));
+    log(t(locale, "抓取远程页面中...", "Fetching remote pages..."));
     const remoteResult = await collectRemoteDocs(plan.remote, log);
     docs.push(...remoteResult.docs);
     warnings.push(...remoteResult.warnings);

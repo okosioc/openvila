@@ -31,6 +31,7 @@ function createPlan(options = {}) {
     remote: {
       enabled: false,
       sitemap_url: "",
+      urls: [],
       max_pages: 0,
     },
     ...options,
@@ -93,6 +94,33 @@ test("runScan previews a plan without writing knowledge files in dry-run mode", 
   assert.ok(context.logs.some((line) => line.includes("Scan Scope To Confirm")));
   assert.ok(context.logs.some((line) => line.includes("file list (1 / 2):\n  faq.html")));
   assert.ok(context.logs.some((line) => line.includes("dry-run completed")));
+});
+
+test("runScan previews remote pages from a scan plan", async () => {
+  const context = createContext();
+  const plan = createPlan({
+    planning_mode: "plan",
+    framework: "unknown",
+    framework_signals: [],
+    llm_model: "",
+    remote: {
+      enabled: true,
+      sitemap_url: "",
+      urls: ["https://example.com/faq"],
+      max_pages: 20,
+    },
+  });
+
+  await runScan(
+    context,
+    { options: { "dry-run": true } },
+    {
+      loadConfig: async () => ({ scan: {} }),
+      prepareKnowledgeScanPlan: async () => plan,
+    },
+  );
+
+  assert.ok(context.logs.some((line) => line.includes("remote pages (1):\n  https://example.com/faq")));
 });
 
 test("runScan hides framework details when reusing a scan plan", async () => {

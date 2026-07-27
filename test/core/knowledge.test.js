@@ -99,6 +99,34 @@ async function startLlmServer(options = {}) {
   };
 }
 
+async function startRemotePageServer() {
+  const server = http.createServer((request, response) => {
+    if (request.url !== "/faq") {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    response.end("<h1>Remote FAQ</h1><p>Remote support information.</p>");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Remote page test server did not expose a TCP port");
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/faq`,
+    close: () => {
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+      return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    },
+  };
+}
+
 test("default scan config has no db_auto toggle", () => {
   assert.equal("db_auto" in defaultConfig().scan, false);
   assert.equal(defaultConfig().scan.llm_plan_max_tokens, 4800);
@@ -206,6 +234,7 @@ test("prepareKnowledgeScanPlan uses an editable scan plan without LLM planning",
       [
         "file://www/posts/*",
         "file://docs/**/*.md",
+        "https://example.com/help",
         "sqlite://data/site.db::posts",
         "",
       ].join("\n"),
@@ -226,6 +255,12 @@ test("prepareKnowledgeScanPlan uses an editable scan plan without LLM planning",
   assert.deepEqual(plan.database.selected_table_keys, ["sqlite://data/site.db::posts"]);
   assert.equal(plan.database.queries[0].limit, 12);
   assert.equal(plan.database.queries[0].target.connection_url, "sqlite://data/site.db");
+  assert.deepEqual(plan.remote, {
+    sitemap_url: "",
+    urls: ["https://example.com/help"],
+    max_pages: 20,
+    enabled: true,
+  });
 });
 
 test("buildKnowledgeBase records no planning call when reusing an unchanged scan plan", async (context) => {
@@ -329,6 +364,41 @@ test("buildKnowledgeBase stores anchor URLs outside the document compiler input"
   assert.deepEqual(linkIndex.links, [{ source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" }]);
 });
 
+test("buildKnowledgeBase fetches remote URLs from a scan plan", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  const remotePage = await startRemotePageServer();
+  context.after(async () => {
+    await remotePage.close();
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  const config = defaultConfig();
+  config.llm = {
+    endpoint: llm.endpoint,
+    api_key: "test-key",
+    model: "test-model",
+  };
+  const plan = await prepareKnowledgeScanPlan(cwd, {
+    config,
+    scanPlan: { remote_urls: [remotePage.url] },
+  });
+
+  const result = await buildKnowledgeBase(cwd, {
+    config,
+    plan,
+    selections: { filesystem: false, database: false, remote: true },
+  });
+  const compilerRequest = llm.requests.find((request) =>
+    String(request?.messages?.[0]?.content || "").includes("website knowledge document compiler"),
+  );
+
+  assert.equal(result.source_stats.remote, 1);
+  assert.match(compilerRequest.messages[1].content, /Remote FAQ/);
+});
+
 test("prepareKnowledgeScanPlan previews an in-memory edited scan plan", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   context.after(() => fs.rm(cwd, { recursive: true, force: true }));
@@ -352,6 +422,7 @@ test("plain scan plans serialize file and database lines", () => {
   const raw = [
     "file://www/posts/*",
     "file://docs/**/*.md",
+    "https://example.com/faq",
     "mongodb://[::1]:27017/demo::posts",
     "mongodb://[::1]:27017/demo::tags",
     "",
@@ -361,6 +432,7 @@ test("plain scan plans serialize file and database lines", () => {
 
   assert.deepEqual(plan, {
     files: ["www/posts/*", "docs/**/*.md"],
+    remote_urls: ["https://example.com/faq"],
     database: {
       connection_url: "mongodb://[::1]:27017/demo",
       tables: ["posts", "tags"],
@@ -443,7 +515,7 @@ test("database targets retain a connection URL and normalized key", () => {
   assert.equal(mongoTarget.key, "mongodb://localhost:27017/girlatlas");
 });
 
-test("prepareKnowledgeScanPlan disables the sitemap plan when skipRemote is set", async (context) => {
+test("prepareKnowledgeScanPlan disables sitemap and scan-plan remote pages when skipRemote is set", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   const llm = await startLlmServer();
   context.after(async () => {
@@ -463,11 +535,13 @@ test("prepareKnowledgeScanPlan disables the sitemap plan when skipRemote is set"
         sitemap_url: "https://example.com/sitemap.xml",
       },
     },
+    scanPlan: { remote_urls: ["https://example.com/faq"] },
     skipRemote: true,
   });
 
   assert.equal(plan.remote.enabled, false);
   assert.equal(plan.remote.sitemap_url, "");
+  assert.deepEqual(plan.remote.urls, []);
 });
 
 test("prepareKnowledgeScanPlan ignores legacy database query configuration", async (context) => {

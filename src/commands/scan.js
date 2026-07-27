@@ -57,6 +57,24 @@ function renderDatabaseQueries(plan, locale) {
   ].filter(Boolean);
 }
 
+function renderRemoteSources(plan, locale) {
+  const remote = plan.remote || {};
+  const urls = remote.urls || [];
+  const lines = [];
+  if (remote.sitemap_url) {
+    lines.push(pick(locale, `- 远程 sitemap: ${remote.sitemap_url} (max=${remote.max_pages})`, `- remote sitemap: ${remote.sitemap_url} (max=${remote.max_pages})`));
+  }
+  if (urls.length > 0) {
+    const previewUrls = urls.slice(0, SCAN_PLAN_PREVIEW_LIMIT);
+    lines.push(pick(locale, `- 远程页面（${urls.length}）：`, `- remote pages (${urls.length}):`));
+    lines.push(...previewUrls.map((url) => `  ${url}`));
+    if (urls.length > previewUrls.length) {
+      lines.push(pick(locale, `  ... 其余 ${urls.length - previewUrls.length} 个页面`, `  ... ${urls.length - previewUrls.length} more pages`));
+    }
+  }
+  return lines.length > 0 ? lines : [pick(locale, "- 远程：disabled", "- remote: disabled")];
+}
+
 function renderScanPlan(ctx, plan) {
   const planningMode = plan.planning_mode === "plan" ? "plan" : "auto";
   const editedDraft = planningMode === "plan" && Boolean(plan.generated_scan_plan);
@@ -89,7 +107,7 @@ function renderScanPlan(ctx, plan) {
       "[scan] 2/6 待确认扫描范围",
       ...renderMatchedPaths(plan, ctx.locale),
       ...renderDatabaseQueries(plan, ctx.locale),
-      `- 远程 sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
+      ...renderRemoteSources(plan, ctx.locale),
     ].join("\n"),
     [
       analysisHeading,
@@ -100,7 +118,7 @@ function renderScanPlan(ctx, plan) {
       "[scan] 2/6 Scan Scope To Confirm",
       ...renderMatchedPaths(plan, ctx.locale),
       ...renderDatabaseQueries(plan, ctx.locale),
-      `- remote sitemap: ${plan.remote.enabled ? `${plan.remote.sitemap_url} (max=${plan.remote.max_pages})` : "disabled"}`,
+      ...renderRemoteSources(plan, ctx.locale),
     ].join("\n"),
   );
 }

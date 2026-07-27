@@ -96,6 +96,7 @@ export async function loadKnowledgeScanPlan(cwd) {
 
 export function parseKnowledgeScanPlan(raw, planPath = "") {
   const files = [];
+  const remoteUrls = [];
   const databasesByUrl = new Map();
   const lines = String(raw ?? "").split(/\r?\n/);
 
@@ -110,6 +111,14 @@ export function parseKnowledgeScanPlan(raw, planPath = "") {
         files.push(filePattern);
         continue;
       }
+    } else if (/^https?:\/\//i.test(line)) {
+      try {
+        const url = new URL(line);
+        if (url.protocol === "http:" || url.protocol === "https:") {
+          remoteUrls.push(line);
+          continue;
+        }
+      } catch {}
     } else {
       const separator = line.lastIndexOf("::");
       const connectionUrl = line.slice(0, separator).trim();
@@ -128,12 +137,14 @@ export function parseKnowledgeScanPlan(raw, planPath = "") {
   const databases = [...databasesByUrl.values()].map((entry) => ({ ...entry, tables: unique(entry.tables) }));
   return {
     files: unique(files),
+    ...(remoteUrls.length > 0 ? { remote_urls: unique(remoteUrls) } : {}),
     ...(databases.length === 1 ? { database: databases[0] } : databases.length > 1 ? { databases } : {}),
   };
 }
 
 export function stringifyKnowledgeScanPlan(plan) {
   const fileLines = unique(toArray(plan?.files)).map((filePattern) => `file://${filePattern}`);
+  const remoteLines = unique(toArray(plan?.remote_urls));
   const databaseLines = scanPlanDatabaseEntries(plan).flatMap((entry) => {
     const connectionUrl = String(entry?.connection_url || "").trim();
     if (!connectionUrl) {
@@ -141,7 +152,7 @@ export function stringifyKnowledgeScanPlan(plan) {
     }
     return unique(toArray(entry.tables)).map((tableName) => `${connectionUrl}::${tableName}`);
   });
-  const lines = [...fileLines, ...databaseLines];
+  const lines = [...fileLines, ...remoteLines, ...databaseLines];
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
