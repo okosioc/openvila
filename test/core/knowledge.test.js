@@ -63,7 +63,7 @@ async function startLlmServer(options = {}) {
                         title: "FAQ",
                         tags: ["vip"],
                         summary: "VIP information.",
-                        body: "Read the VIP information.",
+                        body: options.compilerBody || "Read the VIP information.",
                         is_frequently_asked: true,
                       }],
                     }
@@ -130,6 +130,9 @@ async function startRemotePageServer() {
 test("default scan config has no db_auto toggle", () => {
   assert.equal("db_auto" in defaultConfig().scan, false);
   assert.equal(defaultConfig().scan.llm_plan_max_tokens, 4800);
+  assert.equal(defaultConfig().scan.llm_compile_batch_chars, 50000);
+  assert.equal(defaultConfig().scan.llm_compile_doc_chars, 20000);
+  assert.equal(defaultConfig().scan.llm_compile_max_tokens, 20000);
 });
 
 test("default config has a language setting", () => {
@@ -216,7 +219,7 @@ test("prepareKnowledgeScanPlan reports a truncated planning response", async (co
         scan: {},
       },
     }),
-    /LLM file planning response was truncated \(finish_reason=length\)/,
+    /LLM file planning failed: LLM output reached max_tokens \(4800\); finish_reason: length/,
   );
 });
 
@@ -314,7 +317,7 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
     file_planning: 0,
     doc_compile_batches: 0,
     total: 0,
-    doc_compile_batch_chars: 100000,
+    doc_compile_batch_chars: 50000,
   });
   assert.deepEqual(JSON.parse(await fs.readFile(runtimePaths(cwd).knowledgeLinks, "utf8")).links, [
     { source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" },
@@ -362,6 +365,77 @@ test("buildKnowledgeBase stores anchor URLs outside the document compiler input"
   assert.match(compilerRequest.messages[1].content, /Buy VIP/);
   assert.doesNotMatch(compilerRequest.messages[1].content, /dash\/buy-vip/);
   assert.deepEqual(linkIndex.links, [{ source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" }]);
+});
+
+test("buildKnowledgeBase preserves Markdown formatting returned by the LLM", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer({ compilerBody: "## Details\n\n- First item\n- Second item" });
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+  const config = defaultConfig();
+  config.llm = {
+    endpoint: llm.endpoint,
+    api_key: "test-key",
+    model: "test-model",
+  };
+
+  await buildKnowledgeBase(cwd, {
+    config,
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: ["faq.html"] },
+      database: { queries: [] },
+      remote: { enabled: false },
+    },
+  });
+
+  const compiled = await fs.readFile(path.join(runtimePaths(cwd).knowledgeDocs, "fs-faq-html.md"), "utf8");
+  assert.match(compiled, /## Details\n\n- First item\n- Second item/);
+});
+
+test("buildKnowledgeBase limits a long file to the configured compiler input size", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  const tail = "END-OF-LONG-KNOWLEDGE-DOCUMENT";
+  await fs.writeFile(path.join(cwd, "long.md"), `${"a".repeat(50000 - tail.length)}${tail}`);
+  const config = defaultConfig();
+  config.llm = {
+    endpoint: llm.endpoint,
+    api_key: "test-key",
+    model: "test-model",
+  };
+
+  await buildKnowledgeBase(cwd, {
+    config,
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: ["long.md"] },
+      database: { queries: [] },
+      remote: { enabled: false },
+    },
+  });
+
+  const compilerRequest = llm.requests.find((request) =>
+    String(request?.messages?.[0]?.content || "").includes("website knowledge document compiler"),
+  );
+  assert.equal(compilerRequest.max_tokens, 20000);
+  assert.doesNotMatch(compilerRequest.messages[1].content, new RegExp(tail));
+  assert.match(compilerRequest.messages[1].content, /\.\.\.\[truncated\]/);
 });
 
 test("buildKnowledgeBase fetches remote URLs from a scan plan", async (context) => {

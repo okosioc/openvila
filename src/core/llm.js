@@ -4,8 +4,12 @@ import { resolveLlmSettings } from "./runtime.js";
 
 function withTimeout(ms) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  return { controller, timer };
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ms);
+  return { controller, timer, didTimeout: () => timedOut };
 }
 
 function trimSlash(value) {
@@ -64,6 +68,37 @@ function emptyContentError(llmPrefix, response, reason = "no content in choices[
   return {
     log: `${llmPrefix}> [error] ${reason}\nresponse: ${fullResponse}`,
     error: `LLM response has no content: ${summary}`,
+  };
+}
+
+function outputLimitError(llmPrefix, response, maxTokens) {
+  const fullResponse = serializeLlmResponse(response);
+  return {
+    log: `${llmPrefix}> [error] output token limit reached\nfinish_reason: length\nmax_tokens: ${maxTokens}\nresponse: ${fullResponse}`,
+    error: `LLM output reached max_tokens (${maxTokens}); finish_reason: length`,
+  };
+}
+
+function requestFailure(llmPrefix, error, timeoutMs, didTimeout) {
+  const name = String(error?.name || "Error");
+  const message = String(error?.message || error || "Unknown request error");
+  const cause = error?.cause;
+  const causeName = String(cause?.name || "").trim();
+  const causeMessage = String(cause?.message || cause || "").trim();
+  const exception = `${name}: ${message}`;
+  const causeLine = causeMessage ? `\ncause: ${causeName ? `${causeName}: ` : ""}${causeMessage}` : "";
+
+  if (didTimeout()) {
+    const timeoutError = `LLM request timed out after ${timeoutMs}ms`;
+    return {
+      log: `${llmPrefix}> [error] request timeout\ntimeout_ms: ${timeoutMs}\nprovider_response: unavailable (request aborted before a response)\nexception: ${exception}${causeLine}`,
+      error: timeoutError,
+    };
+  }
+
+  return {
+    log: `${llmPrefix}> [error] request failed\nexception: ${exception}${causeLine}`,
+    error: `LLM request failed: ${message}`,
   };
 }
 
@@ -223,7 +258,7 @@ export async function chatCompletion(config, messages, overrides = {}) {
   }
 
   const url = resolveChatCompletionsUrl(endpoint);
-  const { controller, timer } = withTimeout(timeoutMs);
+  const { controller, timer, didTimeout } = withTimeout(timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -261,6 +296,15 @@ export async function chatCompletion(config, messages, overrides = {}) {
       };
     }
 
+    if (json?.choices?.[0]?.finish_reason === "length") {
+      const failure = outputLimitError(llmPrefix, json, requestMaxTokens);
+      emitOutputLog(failure.log);
+      return {
+        ok: false,
+        error: failure.error,
+      };
+    }
+
     const content = json?.choices?.[0]?.message?.content;
     if (!content) {
       const failure = emptyContentError(llmPrefix, json);
@@ -279,10 +323,11 @@ export async function chatCompletion(config, messages, overrides = {}) {
       raw: json,
     };
   } catch (error) {
-    emitOutputLog(`${llmPrefix}> [error] ${error.message}`);
+    const failure = requestFailure(llmPrefix, error, timeoutMs, didTimeout);
+    emitOutputLog(failure.log);
     return {
       ok: false,
-      error: `LLM request failed: ${error.message}`,
+      error: failure.error,
     };
   } finally {
     clearTimeout(timer);
@@ -314,7 +359,7 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
   }
 
   const url = resolveChatCompletionsUrl(endpoint);
-  const { controller, timer } = withTimeout(timeoutMs);
+  const { controller, timer, didTimeout } = withTimeout(timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -352,6 +397,14 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
       const json = parseLlmResponse(responseText);
       if (!json) {
         const failure = emptyContentError(llmPrefix, responseText, "provider response is not valid JSON");
+        emitOutputLog(failure.log);
+        return {
+          ok: false,
+          error: failure.error,
+        };
+      }
+      if (json?.choices?.[0]?.finish_reason === "length") {
+        const failure = outputLimitError(llmPrefix, json, requestMaxTokens);
         emitOutputLog(failure.log);
         return {
           ok: false,
@@ -442,6 +495,15 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
       }
     }
 
+    if (lastPayload?.choices?.[0]?.finish_reason === "length") {
+      const failure = outputLimitError(llmPrefix, lastPayload, requestMaxTokens);
+      emitOutputLog(failure.log);
+      return {
+        ok: false,
+        error: failure.error,
+      };
+    }
+
     if (!accumulated) {
       const failure = emptyContentError(llmPrefix, lastPayload, "empty stream content");
       emitOutputLog(failure.log);
@@ -459,10 +521,11 @@ export async function chatCompletionStream(config, messages, overrides = {}) {
       raw: null,
     };
   } catch (error) {
-    emitOutputLog(`${llmPrefix}> [error] ${error.message}`);
+    const failure = requestFailure(llmPrefix, error, timeoutMs, didTimeout);
+    emitOutputLog(failure.log);
     return {
       ok: false,
-      error: `LLM request failed: ${error.message}`,
+      error: failure.error,
     };
   } finally {
     clearTimeout(timer);

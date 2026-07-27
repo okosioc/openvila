@@ -89,6 +89,8 @@
   var renderedClientMessageIds = Object.create(null);
   var streamingMessageViews = Object.create(null);
   var chatEvents = null;
+  var handoffActive = false;
+  var handoffUpdatedAt = 0;
   var waitingForReply = false;
   var replyWaitStartedAt = 0;
   var CHAT_ICON_SVG =
@@ -277,6 +279,20 @@
   button.style.zIndex = "2147483647";
   button.style.boxShadow = "0 12px 28px rgba(37,99,235,.4)";
 
+  var unreadSupportIndicator = document.createElement("span");
+  unreadSupportIndicator.setAttribute("aria-hidden", "true");
+  unreadSupportIndicator.style.position = "absolute";
+  unreadSupportIndicator.style.top = "3px";
+  unreadSupportIndicator.style.right = "3px";
+  unreadSupportIndicator.style.width = "9px";
+  unreadSupportIndicator.style.height = "9px";
+  unreadSupportIndicator.style.border = "2px solid #fff";
+  unreadSupportIndicator.style.borderRadius = "50%";
+  unreadSupportIndicator.style.background = "#ef4444";
+  unreadSupportIndicator.style.display = "none";
+  unreadSupportIndicator.style.pointerEvents = "none";
+  button.appendChild(unreadSupportIndicator);
+
   function append(role, text, options) {
     var messageOptions = options || {};
     var list = document.getElementById("openvila-messages");
@@ -343,7 +359,7 @@
     var payload = await res.json().catch(function () {
       return {};
     });
-    return Array.isArray(payload.messages) ? payload.messages : [];
+    return payload;
   }
 
   function appendChatMessage(item) {
@@ -370,7 +386,47 @@
     if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
     append(roleLabel(item.role), content, { role: role, ts: item.ts });
 
+    if (role === "support" && panel.style.display === "none") {
+      unreadSupportIndicator.style.display = "block";
+    }
+
     completeReplyWait(item, role);
+  }
+
+  function startNewChatSession() {
+    closeChatEvents();
+    writeStorage(window.localStorage, SESSION_ID_KEY, "");
+    chatIdentity = getOrCreateIdentity();
+    handoffActive = false;
+    handoffUpdatedAt = 0;
+    var list = document.getElementById("openvila-messages");
+    if (list) {
+      list.textContent = "";
+    }
+    renderedMessageIds = Object.create(null);
+    renderedClientMessageIds = Object.create(null);
+    streamingMessageViews = Object.create(null);
+    unreadSupportIndicator.style.display = "none";
+    setWaitingForReply(false);
+    openChatEvents();
+    refreshChatHistory();
+  }
+
+  function setHandoffActive(active, updatedAt) {
+    var nextUpdatedAt = Date.parse(String(updatedAt || ""));
+    if (!active && !Number.isFinite(nextUpdatedAt) && handoffUpdatedAt > 0) {
+      return;
+    }
+    if (Number.isFinite(nextUpdatedAt)) {
+      if (nextUpdatedAt < handoffUpdatedAt) {
+        return;
+      }
+      handoffUpdatedAt = nextUpdatedAt;
+    }
+    handoffActive = active === true;
+    if (!handoffActive && panel.style.display === "none") {
+      closeChatEvents();
+    }
   }
 
   function completeReplyWait(item, role) {
@@ -428,6 +484,12 @@
         appendChatDelta(JSON.parse(String(event.data || "{}")));
       } catch (error) {}
     });
+    source.addEventListener("handoff", function (event) {
+      try {
+        var payload = JSON.parse(String(event.data || "{}"));
+        setHandoffActive(payload.active, payload.updated_at);
+      } catch (error) {}
+    });
     source.addEventListener("error", function () {
       if (source.readyState === window.EventSource.CLOSED && chatEvents === source) {
         chatEvents = null;
@@ -465,33 +527,84 @@
     }
   }
 
+  async function submitChatCommand(command, identity) {
+    var res = await fetch(apiBase + CHAT_API_PATH + "/" + command, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: identity.sessionId,
+        locale: VISITOR_LOCALE
+      })
+    });
+
+    var payload = await res.json().catch(function () {
+      return {};
+    });
+    if (!res.ok) {
+      throw new Error(String(payload.error || ("HTTP " + res.status)));
+    }
+    return payload;
+  }
+
+  function hidePanel() {
+    panel.style.display = "none";
+    if (!handoffActive) {
+      closeChatEvents();
+    }
+  }
+
   button.addEventListener("click", function (event) {
     if (event && event.isTrusted === false) return;
 
     panel.style.display = panel.style.display === "none" ? "block" : "none";
     if (panel.style.display === "block") {
       chatIdentity = chatIdentity || getOrCreateIdentity();
+      unreadSupportIndicator.style.display = "none";
       scrollMessagesToBottom();
       openChatEvents();
       refreshChatHistory();
     } else {
-      closeChatEvents();
+      hidePanel();
     }
   });
 
   panel.querySelector("#openvila-close").addEventListener("click", function () {
-    panel.style.display = "none";
-    closeChatEvents();
+    hidePanel();
   });
 
   var chatIdentity = null;
 
   panel.querySelector("#openvila-form").addEventListener("submit", async function (e) {
     e.preventDefault();
-    if (waitingForReply) return;
     var input = panel.querySelector("#openvila-input");
     var text = (input.value || "").trim();
     if (!text || !chatIdentity) return;
+    var command = text.toLowerCase();
+    if (command === "/close") {
+      input.value = "";
+      hidePanel();
+      return;
+    }
+    if (waitingForReply) return;
+
+    if (command === "/reset" || command === "/human") {
+      setWaitingForReply(true);
+      input.value = "";
+      try {
+        var result = await submitChatCommand(command.slice(1), chatIdentity);
+        if (command === "/reset") {
+          startNewChatSession();
+        } else if (result.already_requested) {
+          setWaitingForReply(false);
+        }
+      } catch (err) {
+        setWaitingForReply(false);
+        var commandChinese = VISITOR_LOCALE.toLowerCase().startsWith("zh");
+        append(commandChinese ? "系统" : "System", (commandChinese ? "请求失败：" : "Request failed: ") + err.message, { ts: new Date().toISOString() });
+      }
+      return;
+    }
+
     setWaitingForReply(true);
     input.value = "";
     var clientMessageId = generateId("message");
@@ -517,7 +630,11 @@
 
   async function refreshChatHistory() {
     try {
-      var messages = await requestChatHistory(chatIdentity);
+      var payload = await requestChatHistory(chatIdentity);
+      if (payload.handoff && typeof payload.handoff.active === "boolean") {
+        setHandoffActive(payload.handoff.active, payload.handoff.updated_at);
+      }
+      var messages = Array.isArray(payload.messages) ? payload.messages : [];
       for (var i = 0; i < messages.length; i += 1) {
         appendChatMessage(messages[i]);
       }
@@ -525,7 +642,7 @@
   }
 
   setInterval(function () {
-    if (panel.style.display === "block" && !isChatEventsOpen()) {
+    if ((panel.style.display === "block" || handoffActive) && !isChatEventsOpen()) {
       openChatEvents();
       refreshChatHistory();
     }

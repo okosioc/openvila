@@ -120,6 +120,7 @@ test("runScan previews remote pages from a scan plan", async () => {
     },
   );
 
+  assert.ok(context.logs.some((line) => line.includes("remote URLs: 1")));
   assert.ok(context.logs.some((line) => line.includes("remote pages (1):\n  https://example.com/faq")));
 });
 

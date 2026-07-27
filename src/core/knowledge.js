@@ -229,9 +229,6 @@ async function pickKnowledgesByLlm(config, options = {}) {
   if (!completion.ok) {
     throw new Error(`LLM file planning failed: ${completion.error}`);
   }
-  if (completion.raw?.choices?.[0]?.finish_reason === "length") {
-    throw new Error("LLM file planning response was truncated (finish_reason=length).");
-  }
 
   const parsed = extractJsonObject(completion.content);
   const framework = String(parsed?.framework || "")
@@ -453,7 +450,7 @@ async function cleanKnowledgeFolder(paths, options = {}) {
   await fs.mkdir(paths.knowledgeDocs, { recursive: true });
 }
 
-async function collectFilesystemDocs(cwd, matchedPaths) {
+async function collectFilesystemDocs(cwd, matchedPaths, contentChars) {
   const docs = [];
   for (const relative of matchedPaths) {
     const fullPath = path.join(cwd, relative);
@@ -463,8 +460,8 @@ async function collectFilesystemDocs(cwd, matchedPaths) {
     }
 
     const rawContent = String(content || "");
-    const cleaned = cleanTextForPrompt(stripHtml(rawContent), 28000);
-    const hashContent = cleanTextForPrompt(htmlAnchorsToMarkdown(rawContent), 28000);
+    const cleaned = cleanTextForPrompt(stripHtml(rawContent), contentChars);
+    const hashContent = cleanTextForPrompt(htmlAnchorsToMarkdown(rawContent), contentChars);
     docs.push({
       id: `file:${relative}`,
       source: relative,
@@ -477,14 +474,9 @@ async function collectFilesystemDocs(cwd, matchedPaths) {
   return docs;
 }
 
-async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
+async function collectDatabaseDocs(cwd, databasePlan, contentChars, log = () => undefined) {
   const docs = [];
   const warnings = [];
-  const log = typeof options.log === "function" ? options.log : () => undefined;
-  const limiter =
-    typeof options.limitText === "function"
-      ? options.limitText
-      : (value, maxLen) => cleanTextForPrompt(String(value ?? ""), maxLen);
   const usedSources = new Set();
 
   function pickRowId(row, index) {
@@ -530,7 +522,7 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
           source = `db:${engineToken}:${tableToken}:${rowIdToken}`;
         }
         usedSources.add(source);
-        const text = limiter(stringifyDbRow(row), 16000);
+        const text = cleanTextForPrompt(stringifyDbRow(row), contentChars);
         docs.push({
           id: source,
           source,
@@ -548,7 +540,7 @@ async function collectDatabaseDocs(cwd, databasePlan, options = {}) {
   return { docs, warnings };
 }
 
-async function collectRemoteDocs(remotePlan, log) {
+async function collectRemoteDocs(remotePlan, log, contentChars) {
   if (!remotePlan.enabled) {
     return { docs: [], warnings: [] };
   }
@@ -574,8 +566,8 @@ async function collectRemoteDocs(remotePlan, log) {
   for (const url of urls) {
     try {
       const html = await fetchText(url, 15000);
-      const text = cleanTextForPrompt(stripHtml(html), 16000);
-      const hashContent = cleanTextForPrompt(stripHtml(htmlAnchorsToMarkdown(html)), 16000);
+      const text = cleanTextForPrompt(stripHtml(html), contentChars);
+      const hashContent = cleanTextForPrompt(stripHtml(htmlAnchorsToMarkdown(html)), contentChars);
       if (!text) continue;
 
       docs.push({
@@ -607,9 +599,9 @@ function intRange(value, min, max, fallback) {
 
 function compileConfig(config) {
   return {
-    batchChars: intRange(config?.scan?.llm_compile_batch_chars, 30000, 900000, 100000),
-    maxTokens: intRange(config?.scan?.llm_compile_max_tokens, 1000, 16000, 4800),
-    docContentChars: intRange(config?.scan?.llm_compile_doc_chars, 4000, 60000, 18000),
+    batchChars: intRange(config?.scan?.llm_compile_batch_chars, 30000, 900000, 50000),
+    maxTokens: intRange(config?.scan?.llm_compile_max_tokens, 1000, 128000, 20000),
+    docContentChars: intRange(config?.scan?.llm_compile_doc_chars, 4000, 900000, 20000),
   };
 }
 
@@ -691,20 +683,11 @@ function parseCompiledDocs(json) {
     .filter(Boolean);
 }
 
-function stripAllHtmlTags(text) {
-  return String(text || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function renderCompiledDocMarkdown(docPath, title, tags, summary, body, locale, isFrequentlyAsked = false) {
   const safeTitle = title || path.posix.basename(docPath, ".md") || t(locale, "未命名文档", "Untitled Document");
   const safeSummary = summary || t(locale, "暂无摘要", "No summary");
   const safeTags = unique((tags || []).map((tag) => String(tag || "").trim())).slice(0, 18);
-  const safeBody = stripAllHtmlTags(body);
+  const safeBody = String(body || "").trim();
 
   return [
     `# ${safeTitle}`,
@@ -938,6 +921,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   const selections = defaultSelections(plan, options.selections || {});
   const log = typeof options.log === "function" ? options.log : () => undefined;
   const reset = Boolean(options.reset);
+  const compileSettings = compileConfig(config);
 
   const previous = reset
     ? {
@@ -958,14 +942,14 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   if (selections.filesystem) {
     log(t(locale, "扫描文件系统中...", "Scanning file system..."));
-    const fsDocs = await collectFilesystemDocs(cwd, plan.filesystem.matched_paths);
+    const fsDocs = await collectFilesystemDocs(cwd, plan.filesystem.matched_paths, compileSettings.docContentChars);
     docs.push(...fsDocs);
     scannedFiles = fsDocs.length;
   }
 
   if (selections.database) {
     log(t(locale, "执行数据库查询中...", "Running database queries..."));
-    const dbResult = await collectDatabaseDocs(cwd, plan.database, { log, limitText: cleanTextForPrompt });
+    const dbResult = await collectDatabaseDocs(cwd, plan.database, compileSettings.docContentChars, log);
     docs.push(...dbResult.docs);
     warnings.push(...dbResult.warnings);
     scannedDbRows = dbResult.docs.length;
@@ -973,7 +957,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   if (selections.remote) {
     log(t(locale, "抓取远程页面中...", "Fetching remote pages..."));
-    const remoteResult = await collectRemoteDocs(plan.remote, log);
+    const remoteResult = await collectRemoteDocs(plan.remote, log, compileSettings.docContentChars);
     docs.push(...remoteResult.docs);
     warnings.push(...remoteResult.warnings);
     scannedRemotePages = remoteResult.docs.length;
@@ -1202,7 +1186,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       file_planning: filePlanningCalls,
       doc_compile_batches: docCompileBatchCount,
       total: filePlanningCalls + docCompileBatchCount,
-      doc_compile_batch_chars: compileConfig(config).batchChars,
+      doc_compile_batch_chars: compileSettings.batchChars,
     },
     source_hashes: currentSourceHashes,
     source_doc_map: currentSourceDocMap,

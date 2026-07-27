@@ -444,6 +444,8 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.match(llm.requests[1].messages[0].content, /link with text that fits your answer/);
     assert.match(llm.requests[1].messages[0].content, /unresolved template placeholders/);
     assert.match(llm.requests[1].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
+    assert.match(llm.requests[1].messages[1].content, /Conversation history:/);
+    assert.doesNotMatch(llm.requests[1].messages[1].content, /Knowledge index:/);
 
     const session = await readSession(chat.cwd, "visitor-stream");
     assert.equal(session.messages.at(-1).content, "Hello from Vila");
@@ -471,6 +473,8 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
   try {
     await telegram.waitForPoll();
 
+    events = await openChatEvents(chat.baseUrl, "visitor-2");
+
     const initialResponse = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
@@ -493,7 +497,10 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
     assert.equal(waitingSession.locale, "zh");
     assert.equal(waitingSession.handoff.telegram_message_ids[0], handoffMessage.message_id);
     assert.ok(waitingSession.messages.some((message) => message.content === "已请求人工客服支持。"));
-    events = await openChatEvents(chat.baseUrl, "visitor-2");
+    await events.waitForEvent(
+      (event) => event.event === "handoff" && event.data.active === true,
+      "manual support active event",
+    );
 
     telegram.deliverUpdate({
       update_id: 1,
@@ -554,6 +561,10 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
       (event) => event.data.content === "人工客服服务已结束，您可以继续与 Vila 对话。",
       "manual support close event",
     );
+    await events.waitForEvent(
+      (event) => event.event === "handoff" && event.data.active === false,
+      "manual support closed event",
+    );
 
     await logger.flush();
     const logText = await fs.readFile(logger.logFilePath, "utf8");
@@ -567,6 +578,80 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
   } finally {
     setGlobalLogWriter(null);
     await events?.close();
+    await chat.close();
+    await telegram.close();
+  }
+});
+
+test("chat commands request human support and reset an active handoff", async () => {
+  const telegram = await createTelegramApi();
+  const chat = await createChatService({
+    telegram: {
+      bot_token: "test-token",
+      chat_id: "owner-chat",
+      endpoint: telegram.endpoint,
+    },
+  });
+  const events = await openChatEvents(chat.baseUrl, "visitor-command");
+
+  try {
+    await telegram.waitForPoll();
+    const human = await requestJson(chat.baseUrl, "/openvila/chat/human", {
+      method: "POST",
+      body: JSON.stringify({ session_id: "visitor-command", locale: "en-US" }),
+    });
+
+    assert.equal(human.status, 200);
+    assert.equal(human.body.already_requested, false);
+    const handoffMessage = telegram.messages[0];
+    assert.ok(handoffMessage);
+    const waitingSession = await waitFor(async () => {
+      const session = await readSession(chat.cwd, "visitor-command");
+      return session?.handoff?.status === "waiting_owner" ? session : null;
+    }, "human command handoff");
+    assert.ok(waitingSession.messages.every((message) => message.content !== "/human"));
+
+    telegram.deliverUpdate({
+      update_id: 1,
+      message: {
+        chat: { id: "owner-chat" },
+        reply_to_message: { message_id: handoffMessage.message_id },
+        text: "I can help.",
+      },
+    });
+    await waitFor(async () => {
+      const session = await readSession(chat.cwd, "visitor-command");
+      return session?.handoff?.status === "active" ? session : null;
+    }, "human command activation");
+
+    const reset = await requestJson(chat.baseUrl, "/openvila/chat/reset", {
+      method: "POST",
+      body: JSON.stringify({ session_id: "visitor-command", locale: "en-US" }),
+    });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.body.handoff.active, false);
+
+    const resetSession = await readSession(chat.cwd, "visitor-command");
+    assert.equal(resetSession.handoff.status, "closed");
+    assert.ok(resetSession.messages.some((message) => message.role === "handoff" && /Manual support has ended/.test(message.content)));
+    await events.waitForEvent((event) => event.event === "handoff" && event.data.active === false, "chat reset event");
+    const telegramState = JSON.parse(await fs.readFile(runtimePaths(chat.cwd).telegramState, "utf8"));
+    assert.equal(telegramState.reply_map[`owner-chat:${handoffMessage.message_id}`], undefined);
+
+    await telegram.waitForPoll();
+    telegram.deliverUpdate({
+      update_id: 2,
+      message: {
+        chat: { id: "owner-chat" },
+        reply_to_message: { message_id: handoffMessage.message_id },
+        text: "This old reply must be ignored.",
+      },
+    });
+    await delay(50);
+    const afterOldReply = await readSession(chat.cwd, "visitor-command");
+    assert.equal(afterOldReply.messages.some((message) => message.content === "This old reply must be ignored."), false);
+  } finally {
+    await events.close();
     await chat.close();
     await telegram.close();
   }

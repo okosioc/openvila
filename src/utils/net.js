@@ -100,8 +100,14 @@ export function stripHtml(html) {
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
       .replace(/<template[\s\S]*?<\/template>/gi, " ")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<hr\s*\/?>/gi, "\n")
+      .replace(/<\/(?:address|article|aside|blockquote|div|dl|dt|dd|fieldset|figcaption|figure|footer|form|h[1-6]|header|li|main|nav|ol|p|pre|section|table|tbody|thead|tfoot|tr|ul)\s*>/gi, "\n")
       .replace(/<[^>]+>/g, " "),
   )
-    .replace(/\s+/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[^\S\r\n]+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

@@ -110,6 +110,7 @@ function createWidgetHarness(options = {}) {
   const eventSources = [];
   const storage = new Map();
   const fetchCalls = [];
+  let uuidSequence = 0;
 
   class FakeEventSource {
     static OPEN = 1;
@@ -145,7 +146,7 @@ function createWidgetHarness(options = {}) {
     if (String(url).includes("/openvila/chat/history")) {
       return {
         ok: true,
-        json: async () => ({ messages: [] }),
+        json: async () => ({ messages: [], handoff: { active: false } }),
       };
     }
     if (options.failPost) {
@@ -163,7 +164,7 @@ function createWidgetHarness(options = {}) {
 
   const window = {
     EventSource: FakeEventSource,
-    crypto: { randomUUID: () => "00000000-0000-0000-0000-000000000000" },
+    crypto: { randomUUID: () => `${String(++uuidSequence).padStart(8, "0")}-0000-0000-0000-000000000000` },
     localStorage: {
       getItem: (key) => storage.get(key) || null,
       setItem: (key, value) => storage.set(key, String(value)),
@@ -337,6 +338,67 @@ test("widget close button hides the panel and closes the event stream", async ()
   await close.emit("click");
 
   assert.equal(panel.style.display, "none");
+  assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
+});
+
+test("widget sends reset and human commands without adding them to the conversation", async () => {
+  const harness = await loadWidget();
+  const form = harness.document.getElementById("openvila-form");
+  const input = harness.document.getElementById("openvila-input");
+  const panel = harness.document.getElementById("openvila-panel");
+  const eventSource = harness.eventSources[0];
+  const firstSessionId = harness.storage.get("openvila_session_id");
+
+  input.value = "/human";
+  await form.emit("submit", submitEvent());
+  const humanCall = harness.fetchCalls.find((call) => String(call.url).endsWith("/openvila/chat/human"));
+  assert.ok(humanCall);
+  assert.equal(JSON.parse(humanCall.request.body).message, undefined);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/openvila/chat")).length, 0);
+
+  eventSource.emit("message", {
+    data: JSON.stringify({ id: "human-requested", role: "assistant", content: "Human support requested.", ts: new Date(Date.now() + 10).toISOString() }),
+  });
+
+  input.value = "/reset";
+  await form.emit("submit", submitEvent());
+  const resetCall = harness.fetchCalls.find((call) => String(call.url).endsWith("/openvila/chat/reset"));
+  assert.ok(resetCall);
+  assert.equal(JSON.parse(resetCall.request.body).message, undefined);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/openvila/chat")).length, 0);
+  assert.notEqual(harness.storage.get("openvila_session_id"), firstSessionId);
+  assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
+  assert.equal(harness.eventSources.at(-1).readyState, harness.context.window.EventSource.OPEN);
+
+  input.value = "/close";
+  await form.emit("submit", submitEvent());
+  assert.equal(panel.style.display, "none");
+});
+
+test("widget keeps listening during human support and marks a hidden reply unread", async () => {
+  const harness = await loadWidget();
+  const panel = harness.document.getElementById("openvila-panel");
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const close = harness.document.getElementById("openvila-close");
+  const eventSource = harness.eventSources[0];
+  const unreadIndicator = launcher.children.at(-1);
+
+  eventSource.emit("handoff", { data: JSON.stringify({ active: true, updated_at: "2026-07-27T00:00:00.000Z" }) });
+  await close.emit("click");
+
+  assert.equal(panel.style.display, "none");
+  assert.equal(eventSource.readyState, harness.context.window.EventSource.OPEN);
+
+  eventSource.emit("message", {
+    data: JSON.stringify({ id: "support-reply", role: "support", content: "I can help.", ts: new Date().toISOString() }),
+  });
+  assert.equal(unreadIndicator.style.display, "block");
+
+  await launcher.emit("click", { isTrusted: true });
+  assert.equal(unreadIndicator.style.display, "none");
+
+  await close.emit("click");
+  eventSource.emit("handoff", { data: JSON.stringify({ active: false, updated_at: "2026-07-27T00:00:01.000Z" }) });
   assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
 });
 

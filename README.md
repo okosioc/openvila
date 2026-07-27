@@ -177,7 +177,28 @@ Database scan behavior:
 
 During HTML extraction, anchor text stays in the knowledge document, while safe URLs are written to `links.json`; unsafe protocols such as `javascript:` are discarded. When answering from a selected document, OpenVila provides its link candidates to the LLM, which may use a relevant one as a Markdown link.
 
-Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by `scan.db_auto_query_limit` in `config.yaml` (default `80`). Source planning uses `scan.llm_plan_max_tokens` (default `4800`); doc compilation batches use `scan.llm_compile_batch_chars` (default `100000`) and `scan.llm_compile_max_tokens` (default `4800`).
+Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by `scan.db_auto_query_limit` in `config.yaml` (default `80`). Source planning uses `scan.llm_plan_max_tokens` (default `4800`).
+
+### LLM Compilation
+
+Configure the LLM document compiler in `.openvila/config.yaml`:
+
+```yaml
+scan:
+  llm_compile_batch_chars: 50000
+  llm_compile_doc_chars: 20000
+  llm_compile_max_tokens: 20000
+```
+
+- `llm_compile_batch_chars`: maximum combined **input** source characters in one compilation request. A batch may contain multiple changed documents; per-document metadata also counts toward this limit.
+- `llm_compile_doc_chars`: maximum **input** source characters from each filesystem file, database row, or remote page. When a source exceeds this value, only its beginning is sent to the LLM, followed by a truncation marker; the LLM can only compile that input portion.
+- `llm_compile_max_tokens`: maximum **output** tokens for the compiled JSON response of one batch. It does not include input tokens and is not a character limit; all documents in that batch share this output budget.
+
+With the defaults, each source contributes at most `20000` input characters and a batch contains at most `50000` input characters. Documents close to the per-source limit normally form batches of two; smaller documents can form larger batches. If the provider returns `finish_reason: length`, OpenVila rejects the incomplete compilation and logs the full provider response with the configured `max_tokens` value. Existing explicit values in `.openvila/config.yaml` continue to apply.
+
+For example, a `25000`-character terms page is truncated to its first `20000` characters before compilation. If an `18000`-character pricing page changes in the same scan, both pages normally fit in one batch (about `38000` characters plus metadata) and share its `20000`-token output limit. A further `12000`-character contact page normally starts the next batch because it would push the first batch beyond `50000` characters. The output limit is measured in tokens, not characters.
+
+### Usage
 
 - all CLI logs are written to daily rotated logs: `.openvila/logs/debug-YYYY-MM-DD.log`
 - each LLM call logs request input and response output to the same daily log file
@@ -236,9 +257,17 @@ location /openvila/chat/ {
 
 The widget subscribes to `GET /openvila/chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
 
+When Telegram human support is active, closing the Widget only hides its panel and keeps its SSE connection open. A human reply received while hidden shows an unread dot on the launcher; opening the Widget clears the dot. Normal AI chats still stop listening when the panel closes.
+
+The Widget input also supports these exact commands:
+
+- `/reset`: archive the current conversation, end any active human takeover, then start a new session with the welcome message.
+- `/human`: request human support without sending the command text to Vila.
+- `/close`: hide the chat window.
+
 ### Session
 
-Widget sessions are independent of the website's login state, cookies, and user accounts. Loading a page does not create a session. On the first trusted click of the Widget launcher, it generates a random `session-...` identifier and stores it in `localStorage` under `openvila_session_id`, then loads the welcome message and history. The same browser reuses it for the same website origin; clearing site storage, using a private window or another browser, or changing scheme/hostname/port creates a new session. Programmatic launcher clicks are ignored, though browser automation that simulates a real click cannot be reliably distinguished from a visitor.
+Widget sessions are independent of the website's login state, cookies, and user accounts. Loading a page does not create a session. On the first trusted click of the Widget launcher, it generates a random `session-...` identifier and stores it in `localStorage` under `openvila_session_id`, then loads the welcome message and history. The same browser reuses it for the same website origin; `/reset`, clearing site storage, using a private window or another browser, or changing scheme/hostname/port creates a new session. Programmatic launcher clicks are ignored, though browser automation that simulates a real click cannot be reliably distinguished from a visitor.
 
 ### Languages
 

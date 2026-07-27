@@ -99,6 +99,27 @@ export async function addTelegramReplyMapping(cwd, chatId, messageId, sessionId)
   }));
 }
 
+export async function removeTelegramReplyMappings(cwd, sessionId) {
+  if (!sessionId) {
+    return 0;
+  }
+
+  let removed = 0;
+  await updateTelegramState(cwd, (state) => {
+    const replyMap = Object.fromEntries(
+      Object.entries(state.reply_map).filter(([, mappedSessionId]) => {
+        const keep = mappedSessionId !== sessionId;
+        if (!keep) {
+          removed += 1;
+        }
+        return keep;
+      }),
+    );
+    return { ...state, reply_map: replyMap };
+  });
+  return removed;
+}
+
 async function findTelegramReplySession(cwd, chatId, messageId) {
   if (!messageId) {
     return "";

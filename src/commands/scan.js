@@ -80,6 +80,7 @@ function renderScanPlan(ctx, plan) {
   const editedDraft = planningMode === "plan" && Boolean(plan.generated_scan_plan);
   const selectedTableKeys = plan.database.selected_table_keys || [];
   const databaseDiscovery = plan.database.discovery || {};
+  const remoteUrls = plan.remote?.urls || [];
   const framework = plan.framework || "unknown";
   const frameworkSignals = (plan.framework_signals || []).join(", ") || "none";
   const analysisHeading = pick(
@@ -103,7 +104,7 @@ function renderScanPlan(ctx, plan) {
       `- 规划模式: ${planningMode}`,
       `- 文件选择: ${plan.filesystem.matched_paths.length} / ${plan.filesystem.total_candidates}`,
       `- 数据表选择: ${selectedTableKeys.length} / ${databaseDiscovery.candidate_tables ?? 0}`,
-      "",
+      `- 远程地址: ${remoteUrls.length}`,
       "[scan] 2/6 待确认扫描范围",
       ...renderMatchedPaths(plan, ctx.locale),
       ...renderDatabaseQueries(plan, ctx.locale),
@@ -114,7 +115,7 @@ function renderScanPlan(ctx, plan) {
       `- planning mode: ${planningMode}`,
       `- selected knowledge files: ${plan.filesystem.matched_paths.length} from ${plan.filesystem.total_candidates}`,
       `- selected database tables: ${selectedTableKeys.length} / ${databaseDiscovery.candidate_tables ?? 0}`,
-      "",
+      `- remote URLs: ${remoteUrls.length}`,
       "[scan] 2/6 Scan Scope To Confirm",
       ...renderMatchedPaths(plan, ctx.locale),
       ...renderDatabaseQueries(plan, ctx.locale),

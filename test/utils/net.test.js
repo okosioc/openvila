@@ -18,3 +18,11 @@ test("HTML extraction does not preserve unsafe anchor protocols", () => {
   assert.deepEqual(extractHtmlLinks(html), []);
   assert.equal(stripHtml(html), "Unsafe Email");
 });
+
+test("HTML extraction preserves Markdown and meaningful HTML line breaks", () => {
+  const markdown = "# FAQ\n\n- First item\n- Second item";
+  const html = "<h1>FAQ</h1><p>First<br>line</p><ul><li>One</li><li>Two</li></ul>";
+
+  assert.equal(stripHtml(markdown), markdown);
+  assert.equal(stripHtml(html), "FAQ\nFirst\nline\nOne\nTwo");
+});

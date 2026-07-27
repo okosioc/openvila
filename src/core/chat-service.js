@@ -6,6 +6,7 @@ import { URL } from "node:url";
 import { hasTelegramChannel, notifyChannels, sendTelegramMessage } from "./channels.js";
 import {
   addTelegramReplyMapping,
+  removeTelegramReplyMappings,
   startTelegramHandoffPolling,
 } from "./handoffs.js";
 import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
@@ -520,6 +521,44 @@ async function submitUserMessage(paths, identity, content, clientMessageId, cont
   });
 }
 
+async function closeChatSessionForReset(paths, sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  return enqueueSessionWrite(sessionId, async () => {
+    const now = new Date().toISOString();
+    const existing = await readChatSession(paths, sessionId);
+    if (!existing || !isOpenTelegramHandoff(existing.handoff)) {
+      return {
+        handoff: existing?.handoff || null,
+        system_message: null,
+        had_open_handoff: false,
+        updated_at: now,
+      };
+    }
+
+    const systemMessage = createChatMessage("handoff", chatHandoffText(existing.locale, "closed"), { ts: now });
+    existing.handoff = normalizeStoredHandoff({
+      ...existing.handoff,
+      status: "closed",
+      closed_at: now,
+      updated_at: now,
+    });
+    existing.updated_at = now;
+    if (systemMessage) {
+      existing.messages = [...existing.messages, systemMessage].slice(-MAX_CHAT_MESSAGES_PER_SESSION);
+    }
+    await fs.writeFile(sessionFilePath(paths, sessionId), `${JSON.stringify(existing, null, 2)}\n`, "utf8");
+    return {
+      handoff: existing.handoff,
+      system_message: systemMessage,
+      had_open_handoff: true,
+      updated_at: now,
+    };
+  });
+}
+
 async function loadChatHistory(paths, sessionId, limit = DEFAULT_CHAT_HISTORY_LIMIT) {
   if (!sessionId) {
     return [];
@@ -533,6 +572,13 @@ async function loadChatHistory(paths, sessionId, limit = DEFAULT_CHAT_HISTORY_LI
 
 function isOpenTelegramHandoff(handoff) {
   return Boolean(handoff && handoff.channel === "telegram" && OPEN_HANDOFF_STATUSES.has(handoff.status));
+}
+
+function handoffEventPayload(handoff) {
+  return {
+    active: isOpenTelegramHandoff(handoff),
+    updated_at: String(handoff?.updated_at || ""),
+  };
 }
 
 async function readTelegramHandoff(paths, sessionId) {
@@ -991,13 +1037,9 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
     : "(none)";
 
   //
-  // 2. 生成答案：将用户问题、知识库索引和选中文档内容一起发送给语言模型，生成基于知识库的回答。
+  // 2. 生成答案：将用户问题、对话历史和选中文档内容一起发送给语言模型，生成基于知识库的回答。
   //
-  const indexText = entries
-    .slice(0, 300)
-    .map(([source, item]) => `- ${item.doc_path}: ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
-    .join("\n");
-
+  const historyText = renderDocSelectHistory(chatHistory, DOC_SELECT_HISTORY_LIMIT);
   const docsText = selectedDocs
     .map((doc) => `\n### ${doc.doc_path}\n${doc.content}`)
     .join("\n\n");
@@ -1006,11 +1048,11 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
     {
       role: "system",
       content:
-        "You are assistant for site owners. Use knowledge index first, then selected documents. If unsure, say what information is missing. When Link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs. Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them. Reply in the same language as user input.",
+        "You are assistant for site owners. Use conversation history and selected documents. If unsure, say what information is missing. When Link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs. Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them. Reply in the same language as user input.",
     },
     {
       role: "user",
-      content: `User question:\n${message}\n\nKnowledge index:\n${indexText}\n\nSelected documents:\n${docsText}\n\nLink candidates from selected documents:\n${linkCandidatesText}`,
+      content: `User question:\n${message}\n\nConversation history:\n${historyText}\n\nSelected documents:\n${docsText}\n\nLink candidates from selected documents:\n${linkCandidatesText}`,
     },
   ];
 
@@ -1091,6 +1133,10 @@ export async function startChatService(cwd, config, options = {}) {
     }
   }
 
+  function publishHandoffState(sessionId, handoff) {
+    publishChatEvent(sessionId, "handoff", handoffEventPayload(handoff));
+  }
+
   function closeChatEventSubscribers() {
     for (const [sessionId, subscribers] of chatEventSubscribers) {
       for (const subscriber of subscribers) {
@@ -1131,6 +1177,7 @@ export async function startChatService(cwd, config, options = {}) {
 
     if (isHumanSupportRequest(message)) {
       const support = await requestHumanSupport(cwd, config, paths, identity, message, req, route);
+      publishHandoffState(identity.session_id, support.handoff);
       if (support.system_message) {
         publishChatEvent(identity.session_id, "message", support.system_message);
       }
@@ -1160,6 +1207,54 @@ export async function startChatService(cwd, config, options = {}) {
       { req, route, mode: "knowledge_answer" },
       { id: answerMessageId },
     );
+  }
+
+  async function resetSubmittedChat(identity, req, route) {
+    return enqueueSessionProcess(identity.session_id, async () => {
+      const reset = await closeChatSessionForReset(paths, identity.session_id);
+      if (!reset) {
+        return null;
+      }
+      const removedMappings = await removeTelegramReplyMappings(cwd, identity.session_id);
+      writeChatSessionLog("chat_session_reset", req, identity, {
+        route,
+        human_support: reset.had_open_handoff,
+        telegram_reply_mappings_removed: removedMappings,
+      });
+      const handoff = { active: false, updated_at: reset.updated_at };
+      publishChatEvent(identity.session_id, "handoff", handoff);
+      if (reset.system_message) {
+        publishChatEvent(identity.session_id, "message", reset.system_message);
+      }
+      return { handoff };
+    });
+  }
+
+  async function requestHumanSupportCommand(identity, req, route, visitorLocale) {
+    return enqueueSessionProcess(identity.session_id, async () => {
+      await ensureChatWelcome(identity, req, route, visitorLocale);
+      const existing = await readTelegramHandoff(paths, identity.session_id);
+      if (isOpenTelegramHandoff(existing)) {
+        publishHandoffState(identity.session_id, existing);
+        return { handoff: handoffEventPayload(existing), already_requested: true };
+      }
+
+      const support = await requestHumanSupport(
+        cwd,
+        config,
+        paths,
+        identity,
+        "Visitor requested human support via /human.",
+        req,
+        route,
+      );
+      publishHandoffState(identity.session_id, support.handoff);
+      if (support.system_message) {
+        publishChatEvent(identity.session_id, "message", support.system_message);
+      }
+      await appendAssistantReply(identity, support.answer, { req, route, mode: "human_support" });
+      return { handoff: handoffEventPayload(support.handoff), already_requested: false };
+    });
   }
 
   function queueSubmittedMessage(identity, message, clientMessageId, req, route, visitorLocale) {
@@ -1258,11 +1353,13 @@ export async function startChatService(cwd, config, options = {}) {
         }
 
         await ensureChatWelcome(identity, req, `${CHAT_API_PATH}/history`, visitorLocale);
-        const messages = await loadChatHistory(paths, identity.session_id, limit);
+        const session = await readChatSession(paths, identity.session_id);
+        const messages = session?.messages.slice(-limit) || [];
         sendJson(res, 200, {
           ok: true,
           session_id: identity.session_id,
           messages,
+          handoff: handoffEventPayload(session?.handoff),
         });
         return;
       }
@@ -1279,6 +1376,33 @@ export async function startChatService(cwd, config, options = {}) {
         openSseStream(res);
         addChatEventSubscriber(identity.session_id, req, res);
         writeSseEvent(res, "ready", { session_id: identity.session_id });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === `${CHAT_API_PATH}/reset`) {
+        const body = await parseBody(req);
+        const identity = resolveChatIdentity(body);
+        if (!identity.session_id) {
+          sendJson(res, 400, { error: "session_id is required" });
+          return;
+        }
+
+        const reset = await resetSubmittedChat(identity, req, `${CHAT_API_PATH}/reset`);
+        sendJson(res, 200, { ok: true, ...reset });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === `${CHAT_API_PATH}/human`) {
+        const body = await parseBody(req);
+        const visitorLocale = String(body.locale || "").trim();
+        const identity = resolveChatIdentity(body);
+        if (!identity.session_id) {
+          sendJson(res, 400, { error: "session_id is required" });
+          return;
+        }
+
+        const result = await requestHumanSupportCommand(identity, req, `${CHAT_API_PATH}/human`, visitorLocale);
+        sendJson(res, 200, { ok: true, ...result });
         return;
       }
 
@@ -1329,6 +1453,7 @@ export async function startChatService(cwd, config, options = {}) {
       if (!handoff) {
         return;
       }
+      publishHandoffState(sessionId, handoff);
       if (handoff.system_message) {
         publishChatEvent(sessionId, "message", handoff.system_message);
       }
@@ -1367,6 +1492,7 @@ export async function startChatService(cwd, config, options = {}) {
       if (message?.role === "handoff") {
         publishChatEvent(sessionId, "message", message);
       }
+      publishHandoffState(sessionId, closed);
       writeGlobalLog(`[telegram] handoff closed\nsession_id: ${sanitizeLogField(sessionId)}`);
     },
   });
