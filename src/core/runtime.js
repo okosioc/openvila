@@ -38,7 +38,6 @@ export function runtimePaths(cwd) {
     widget: path.join(base, "widget.html"),
     widgetScript: path.join(base, "widget.js"),
     knowledgeIndex: path.join(base, "knowledges", "index.md"),
-    knowledgeLinks: path.join(base, "knowledges", "links.json"),
     knowledgeManifest: path.join(base, "knowledges", "manifest.json"),
   };
 }

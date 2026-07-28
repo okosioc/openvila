@@ -10,7 +10,7 @@ import {
   startTelegramHandoffPolling,
 } from "./handoffs.js";
 import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
-import { loadDocContents, loadKnowledgeIndex, loadKnowledgeLinks } from "./knowledge.js";
+import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
 import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
@@ -938,13 +938,6 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
 
   const frequentContext = extractFrequentSection(index.index_markdown || "");
   const frequentText = frequentContext || "(none)";
-  const frequentSources = new Set((index.frequent_sources || []).map((source) => String(source || "").trim()).filter(Boolean));
-  const frequentLinkCandidates = (await loadKnowledgeLinks(cwd))
-    .filter((link) => frequentSources.has(link.source))
-    .slice(0, 24);
-  const frequentLinksText = frequentLinkCandidates.length > 0
-    ? frequentLinkCandidates.map((link) => `- [${link.text}](${link.url})`).join("\n")
-    : "(none)";
   const listingText = listing || "(none)";
   const messages = [
     {
@@ -961,13 +954,13 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
         "- Prefer the smallest set of documents that can answer the request; add documents only when complementary.",
         "- Never select unrelated documents merely to fill four slots.",
         "(4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[].",
-        "(5) When Frequent Customer Concern link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs.",
+        "(5) When Frequent Customer Concerns context contains a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs.",
         "(6) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not answer from claims that depend on them.",
       ].join("\n"),
     },
     {
       role: "user",
-      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nFrequent Customer Concern link candidates:\n${frequentLinksText}\n\nDocument index:\n${listingText}`,
+      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listingText}`,
     },
   ];
 
@@ -1040,16 +1033,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
   }
 
   const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
-  const [selectedDocs, knowledgeLinks] = await Promise.all([loadDocContents(cwd, docPaths), loadKnowledgeLinks(cwd)]);
-  const selectedSources = new Set(
-    Object.entries(index.source_doc_map || {})
-      .filter(([, docPath]) => docPaths.includes(docPath))
-      .map(([source]) => source),
-  );
-  const linkCandidates = knowledgeLinks.filter((link) => selectedSources.has(link.source)).slice(0, 24);
-  const linkCandidatesText = linkCandidates.length > 0
-    ? linkCandidates.map((link) => `- [${link.text}](${link.url})`).join("\n")
-    : "(none)";
+  const selectedDocs = await loadDocContents(cwd, docPaths);
 
   //
   // 2. 生成答案：将用户问题、对话历史和选中文档内容一起发送给语言模型，生成基于知识库的回答。
@@ -1066,13 +1050,13 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
         "You are assistant for site owners, answer the user's question according to their intent and the conversation context. Reply in the same language as user input.",
         "Rules:",
         "(1) Use selected documents as the factual source for your answer. If unsure, say what information is missing.",
-        "(2) When Link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs.",
+        "(2) When selected documents contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs.",
         "(3) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them.",
       ].join("\n"),
     },
     {
       role: "user",
-      content: `User question:\n${message}\n\nConversation history:\n${historyText}\n\nSelected documents:\n${docsText}\n\nLink candidates from selected documents:\n${linkCandidatesText}`,
+      content: `User question:\n${message}\n\nConversation history:\n${historyText}\n\nSelected documents:\n${docsText}`,
     },
   ];
 

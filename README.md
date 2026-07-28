@@ -160,7 +160,6 @@ Database scan behavior:
 ```text
 .openvila/knowledges/
   index.md
-  links.json
   manifest.json
   docs/
     fs-*.md
@@ -172,10 +171,9 @@ Database scan behavior:
 - `docs/db_*.md`: one compiled document per database row. OpenVila reads every field from each returned row, serializes the row as formatted JSON, then sends it to the LLM to compile into a markdown document with normalized title, summary, tags, FAQ flag, and body.
 - `docs/remote-*.md`: one compiled document per sitemap page when remote scanning is enabled.
 - `index.md`: generated index with `Frequent Customer Concerns` and `All Documents` sections.
-- `links.json`: safe anchor text, URLs, and source files. It is kept separate from knowledge documents so navigation links do not affect answer retrieval.
 - `manifest.json`: generated source hashes, source-to-document mapping, `index_map`, frequent source list, and LLM call stats; do not edit it.
 
-During HTML extraction, anchor text stays in the knowledge document, while safe URLs are written to `links.json`; unsafe protocols such as `javascript:` are discarded. When answering from a selected document, OpenVila provides its link candidates to the LLM, which may use a relevant one as a Markdown link.
+Before compilation, source text only has NUL characters and surrounding whitespace removed, then is limited by `scan.llm_compile_doc_chars`. HTML, template syntax, and links are passed to the LLM unchanged. The LLM removes HTML and unsafe content, and may turn meaningful source links into Markdown links in the compiled document; answers can reuse only those complete Markdown links.
 
 Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by `scan.db_auto_query_limit` in `config.yaml` (default `80`). Source planning uses `scan.llm_plan_max_tokens` (default `4800`).
 
@@ -318,7 +316,6 @@ my-website/
     scan-plan
     knowledges/
       index.md
-      links.json
       manifest.json
       docs/
     vilas/

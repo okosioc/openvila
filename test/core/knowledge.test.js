@@ -272,7 +272,7 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
   const content = '<h1>FAQ</h1><a href="/dash/buy-vip">Buy VIP</a>';
   const sourceHash = crypto
     .createHash("sha1")
-    .update("filesystem\nfaq.html\n<h1>FAQ</h1>[Buy VIP](/dash/buy-vip)")
+    .update("filesystem\nfaq.html\n<h1>FAQ</h1><a href=\"/dash/buy-vip\">Buy VIP</a>")
     .digest("hex");
   const knowledges = path.join(cwd, ".openvila", "knowledges");
 
@@ -281,6 +281,7 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
     fs.writeFile(path.join(cwd, "faq.html"), content),
     fs.writeFile(path.join(cwd, ".openvila", "config.yaml"), "language: en\n"),
     fs.writeFile(path.join(knowledges, "docs", "fs-faq-html.md"), "# FAQ\n"),
+    fs.writeFile(path.join(knowledges, "links.json"), "{}\n"),
     fs.writeFile(
       path.join(knowledges, "manifest.json"),
       `${JSON.stringify({
@@ -319,12 +320,10 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
     total: 0,
     doc_compile_batch_chars: 50000,
   });
-  assert.deepEqual(JSON.parse(await fs.readFile(runtimePaths(cwd).knowledgeLinks, "utf8")).links, [
-    { source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" },
-  ]);
+  await assert.rejects(fs.access(path.join(knowledges, "links.json")), { code: "ENOENT" });
 });
 
-test("buildKnowledgeBase stores anchor URLs outside the document compiler input", async (context) => {
+test("buildKnowledgeBase forwards raw source content to the document compiler", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   const llm = await startLlmServer();
   context.after(async () => {
@@ -335,7 +334,7 @@ test("buildKnowledgeBase stores anchor URLs outside the document compiler input"
   await initializeRuntime(cwd);
   await fs.writeFile(
     path.join(cwd, "faq.html"),
-    '<h1>FAQ</h1><p>Read <a href="/dash/buy-vip">Buy VIP</a>.</p>',
+    '<h1>FAQ</h1><p>Use <name>. Read <a href="/dash/buy-vip">Buy VIP</a>.</p>',
   );
   const config = defaultConfig();
   config.llm = {
@@ -359,12 +358,10 @@ test("buildKnowledgeBase stores anchor URLs outside the document compiler input"
   const compilerRequest = llm.requests.find((request) =>
     String(request?.messages?.[0]?.content || "").includes("website knowledge document compiler"),
   );
-  const linkIndex = JSON.parse(await fs.readFile(runtimePaths(cwd).knowledgeLinks, "utf8"));
-
   assert.equal(result.compiled, 1);
-  assert.match(compilerRequest.messages[1].content, /Buy VIP/);
-  assert.doesNotMatch(compilerRequest.messages[1].content, /dash\/buy-vip/);
-  assert.deepEqual(linkIndex.links, [{ source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" }]);
+  assert.match(compilerRequest.messages[1].content, /<name>/);
+  assert.match(compilerRequest.messages[1].content, /<a href="\/dash\/buy-vip">Buy VIP<\/a>/);
+  assert.match(compilerRequest.messages[1].content, /summary must be a retrieval-oriented abstract of 2-4 information-dense sentences/);
 });
 
 test("buildKnowledgeBase preserves Markdown formatting returned by the LLM", async (context) => {

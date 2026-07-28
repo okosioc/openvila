@@ -15,7 +15,7 @@ import {
   toPosixPath,
   writeText,
 } from "../utils/fs.js";
-import { extractHtmlLinks, fetchText, htmlAnchorsToMarkdown, parseSitemapLocs, stripHtml } from "../utils/net.js";
+import { fetchText, parseSitemapLocs } from "../utils/net.js";
 import { chatCompletion, extractJsonObject } from "./llm.js";
 import { ensureRuntime, loadConfig, resolveLlmSettings, runtimePaths } from "./runtime.js";
 import {
@@ -447,6 +447,7 @@ async function cleanKnowledgeFolder(paths, options = {}) {
   if (reset) {
     await fs.rm(paths.knowledgeDocs, { recursive: true, force: true });
   }
+  await fs.rm(path.join(paths.knowledges, "links.json"), { force: true });
   await fs.mkdir(paths.knowledgeDocs, { recursive: true });
 }
 
@@ -460,15 +461,12 @@ async function collectFilesystemDocs(cwd, matchedPaths, contentChars) {
     }
 
     const rawContent = String(content || "");
-    const cleaned = cleanTextForPrompt(stripHtml(rawContent), contentChars);
-    const hashContent = cleanTextForPrompt(htmlAnchorsToMarkdown(rawContent), contentChars);
+    const cleaned = cleanTextForPrompt(rawContent, contentChars);
     docs.push({
       id: `file:${relative}`,
       source: relative,
       origin: "filesystem",
       content: cleaned,
-      hash_content: hashContent,
-      links: extractHtmlLinks(rawContent),
     });
   }
   return docs;
@@ -566,8 +564,7 @@ async function collectRemoteDocs(remotePlan, log, contentChars) {
   for (const url of urls) {
     try {
       const html = await fetchText(url, 15000);
-      const text = cleanTextForPrompt(stripHtml(html), contentChars);
-      const hashContent = cleanTextForPrompt(stripHtml(htmlAnchorsToMarkdown(html)), contentChars);
+      const text = cleanTextForPrompt(html, contentChars);
       if (!text) continue;
 
       docs.push({
@@ -575,8 +572,6 @@ async function collectRemoteDocs(remotePlan, log, contentChars) {
         source: url,
         origin: "remote",
         content: text,
-        hash_content: hashContent,
-        links: extractHtmlLinks(html),
       });
     } catch (error) {
       warnings.push(`remote page failed (${url}): ${error.message}`);
@@ -715,7 +710,7 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
     {
       role: "system",
       content:
-        'You are a website knowledge document compiler. For each input document, produce structured markdown-ready fields. Return JSON only: {"docs":[{"id":"d1","title":"...","tags":["..."],"summary":"...","body":"...","is_frequently_asked":true}]}. Requirements: remove all HTML tags; preserve user-visible factual information and complete Markdown links with provided URLs; never invent URLs; do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and omit claims that depend on them; redact unsafe/executable snippets; body should be concise but complete for support Q&A; set is_frequently_asked=true when this document addresses common customer concerns (pricing, payment, plan, trial, refund, terms, privacy, shipping, support, account, troubleshooting, onboarding, FAQ).',
+        'You are a website knowledge document compiler. For each input document, produce structured markdown-ready fields. Return JSON only: {"docs":[{"id":"d1","title":"...","tags":["..."],"summary":"...","body":"...","is_frequently_asked":true}]}. Requirements: remove all HTML tags; preserve user-visible factual information; convert meaningful source links, including HTML anchors, into complete Markdown links with their original URLs; never invent URLs or output unsafe/executable URLs; do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and omit claims that depend on them; redact unsafe/executable snippets; body should be concise but complete for support Q&A; set is_frequently_asked=true when this document addresses common customer concerns (pricing, payment, plan, trial, refund, terms, privacy, shipping, support, account, troubleshooting, onboarding, FAQ).',
     },
     {
       role: "user",
@@ -729,8 +724,8 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
         "Output constraints:",
         "- Every input id must appear exactly once in docs.",
         "- tags should be short keywords.",
-        "- summary should be 1-2 sentences.",
-        "- body must be plain markdown text without HTML tags; preserve only complete provided Markdown links with URLs, never invent URLs, and omit unresolved template placeholders and claims that depend on them.",
+        "- summary must be a retrieval-oriented abstract of 2-4 information-dense sentences. State the document purpose, key topics or entities, relevant conditions or limits, and available actions or lookup behavior. Use concrete facts from the source; avoid generic wording and never invent facts.",
+        "- body must be plain markdown text without HTML tags; retain only meaningful complete Markdown links from the source, never invent URLs, and omit unresolved template placeholders and claims that depend on them.",
         "- is_frequently_asked must be boolean true/false.",
       ].join("\n"),
     },
@@ -968,21 +963,6 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   }
 
   const nowIso = new Date().toISOString();
-  const links = [];
-  const linkKeys = new Set();
-  for (const doc of docs) {
-    for (const link of doc.links || []) {
-      const text = String(link?.text || "").trim();
-      const url = String(link?.url || "").trim();
-      const key = `${doc.source}\n${text}\n${url}`;
-      if (!text || !url || linkKeys.has(key)) {
-        continue;
-      }
-      linkKeys.add(key);
-      links.push({ source: doc.source, text, url });
-    }
-  }
-
   const previousSourceHashes = previous.sourceHashes || {};
   const previousSourceDocMap = previous.sourceDocMap || {};
   const previousIndexMap = previous.indexMap || {};
@@ -1198,8 +1178,6 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   await writeText(paths.knowledgeIndex, indexMarkdown.endsWith("\n") ? indexMarkdown : `${indexMarkdown}\n`);
 
-  await writeText(paths.knowledgeLinks, `${JSON.stringify({ generated_at: nowIso, links }, null, 2)}\n`);
-
   await writeText(paths.knowledgeManifest, `${JSON.stringify(manifest, null, 2)}\n`);
 
   return {
@@ -1233,30 +1211,6 @@ export async function loadKnowledgeIndex(cwd) {
       frequent_sources: [],
       all_sources_order: [],
     };
-  }
-}
-
-export async function loadKnowledgeLinks(cwd) {
-  const paths = runtimePaths(cwd);
-  const raw = await readTextSafe(paths.knowledgeLinks);
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed?.links)) {
-      return [];
-    }
-    return parsed.links
-      .map((link) => ({
-        source: String(link?.source || "").trim(),
-        text: String(link?.text || "").trim(),
-        url: String(link?.url || "").trim(),
-      }))
-      .filter((link) => link.source && link.text && link.url);
-  } catch {
-    return [];
   }
 }
 

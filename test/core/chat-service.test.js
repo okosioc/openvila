@@ -236,7 +236,7 @@ async function createChatService(options = {}) {
       })}\n`,
       "utf8",
     );
-    await fs.writeFile(path.join(paths.knowledgeDocs, "faq.md"), "# FAQ\n\nHelpful answer.\n", "utf8");
+    await fs.writeFile(path.join(paths.knowledgeDocs, "faq.md"), "# FAQ\n\nHelpful answer. [Buy VIP](/dash/buy-vip)\n", "utf8");
   }
 
   const service = await startChatService(cwd, config, { port: config.run.port });
@@ -415,13 +415,6 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
   const events = await openChatEvents(chat.baseUrl, "visitor-stream");
 
   try {
-    await fs.writeFile(
-      runtimePaths(chat.cwd).knowledgeLinks,
-      `${JSON.stringify({
-        links: [{ source: "faq.html", text: "Buy VIP", url: "/dash/buy-vip" }],
-      })}\n`,
-      "utf8",
-    );
     const response = await requestJson(chat.baseUrl, "/openvila/chat", {
       method: "POST",
       body: JSON.stringify({
@@ -445,15 +438,15 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(llm.requests[1].stream, true);
     assert.equal(llm.requests[0].max_tokens, 4096);
     assert.equal(llm.requests[1].max_tokens, 4096);
-    assert.match(llm.requests[0].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
     assert.match(llm.requests[0].messages[0].content, /Interpret short follow-up messages using Recent chat history/);
     assert.match(llm.requests[0].messages[0].content, /Match the visitor's intent semantically/);
     assert.match(llm.requests[0].messages[0].content, /Never select unrelated documents merely to fill four slots/);
-    assert.match(llm.requests[1].messages[0].content, /link with text that fits your answer/);
+    assert.match(llm.requests[1].messages[0].content, /selected documents contain a relevant complete Markdown link/);
     assert.match(llm.requests[1].messages[0].content, /unresolved template placeholders/);
     assert.match(llm.requests[1].messages[0].content, /Rules:\n\(1\).*\n\(2\).*\n\(3\)/s);
     assert.match(llm.requests[1].messages[0].content, /answer the user's question according to their intent/i);
     assert.match(llm.requests[1].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
+    assert.doesNotMatch(llm.requests[1].messages[1].content, /Link candidates from selected documents/);
     assert.match(llm.requests[1].messages[1].content, /Conversation history:/);
     assert.doesNotMatch(llm.requests[1].messages[1].content, /Knowledge index:/);
 
