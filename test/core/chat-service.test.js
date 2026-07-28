@@ -440,6 +440,8 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(deltas.map((event) => event.data.delta).join(""), "Hello from Vila");
     assert.equal(llm.requests.length, 2);
     assert.equal(llm.requests[1].stream, true);
+    assert.equal(llm.requests[0].max_tokens, 4096);
+    assert.equal(llm.requests[1].max_tokens, 4096);
     assert.match(llm.requests[0].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
     assert.match(llm.requests[1].messages[0].content, /link with text that fits your answer/);
     assert.match(llm.requests[1].messages[0].content, /unresolved template placeholders/);

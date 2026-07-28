@@ -111,6 +111,7 @@ const RESERVED_CHAT_SESSION_IDS = new Set(["telegram"]);
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const CHAT_API_PATH = "/openvila/chat";
 const SSE_HEARTBEAT_INTERVAL_MS = 20000;
+const CHAT_LLM_MAX_TOKENS = 4096;
 const chatWriteQueues = new Map();
 const chatProcessQueues = new Map();
 const MAX_LOG_FIELD_LENGTH = 260;
@@ -956,7 +957,7 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
     },
   ];
 
-  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: 1100, trace: "chat:doc_select" });
+  const picked = await chatCompletion(config, messages, { temperature: 0, maxTokens: CHAT_LLM_MAX_TOKENS, trace: "chat:doc_select" });
   if (picked.ok) {
     const maybe = extractJsonObject(picked.content);
     const canAnswerDirectly = Boolean(maybe?.can_answer_directly);
@@ -1058,7 +1059,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
 
   const completion = await chatCompletionStream(config, messages, {
     temperature: 0.35,
-    maxTokens: 900,
+    maxTokens: CHAT_LLM_MAX_TOKENS,
     trace: "chat:answer",
     onDelta,
   });
