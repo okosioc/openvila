@@ -9,6 +9,7 @@ import { startChatService } from "../../src/core/chat-service.js";
 import { ensureWidgetPreview } from "../../src/core/install.js";
 import { createRuntimeFileLogger, setGlobalLogWriter } from "../../src/core/logging.js";
 import { defaultConfig, initializeRuntime, runtimePaths } from "../../src/core/runtime.js";
+import { cliVersion } from "../../src/utils/version.js";
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -395,12 +396,14 @@ test("widget preview renders a direct service embed URL", async () => {
     const response = await fetch(`${chat.baseUrl}/widget`, { headers: { Connection: "close" } });
     const preview = await response.text();
     const port = new URL(chat.baseUrl).port;
-    const widgetUrl = `${chat.baseUrl}/openvila/widget.js?host=127.0.0.1&amp;port=${port}&amp;color=%230f766e`;
-    const embedUrl = `${chat.baseUrl}/openvila/widget.js?color=%230f766e`;
+    const version = (await cliVersion()).replace(/^v/, "");
+    const widgetUrl = `${chat.baseUrl}/openvila/widget.js?host=127.0.0.1&amp;port=${port}&amp;color=%230f766e&amp;version=${version}`;
+    const embedUrl = `${chat.baseUrl}/openvila/widget.js?color=%230f766e&amp;version=${version}`;
 
     assert.equal(response.status, 200);
     assert.ok(preview.includes(`src="${widgetUrl}"`));
     assert.ok(preview.includes(`&lt;script src=&quot;${embedUrl}&quot; defer&gt;&lt;/script&gt;`));
+    assert.match(preview, new RegExp(`version=${version}.*browser cache-busting parameter`));
   } finally {
     await chat.close();
   }
@@ -443,8 +446,13 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(llm.requests[0].max_tokens, 4096);
     assert.equal(llm.requests[1].max_tokens, 4096);
     assert.match(llm.requests[0].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
+    assert.match(llm.requests[0].messages[0].content, /Interpret short follow-up messages using Recent chat history/);
+    assert.match(llm.requests[0].messages[0].content, /Match the visitor's intent semantically/);
+    assert.match(llm.requests[0].messages[0].content, /Never select unrelated documents merely to fill four slots/);
     assert.match(llm.requests[1].messages[0].content, /link with text that fits your answer/);
     assert.match(llm.requests[1].messages[0].content, /unresolved template placeholders/);
+    assert.match(llm.requests[1].messages[0].content, /Rules:\n\(1\).*\n\(2\).*\n\(3\)/s);
+    assert.match(llm.requests[1].messages[0].content, /answer the user's question according to their intent/i);
     assert.match(llm.requests[1].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
     assert.match(llm.requests[1].messages[1].content, /Conversation history:/);
     assert.doesNotMatch(llm.requests[1].messages[1].content, /Knowledge index:/);

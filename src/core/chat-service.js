@@ -14,6 +14,7 @@ import { loadDocContents, loadKnowledgeIndex, loadKnowledgeLinks } from "./knowl
 import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
+import { cliVersion } from "../utils/version.js";
 
 function sendJson(res, statusCode, payload) {
   const body = `${JSON.stringify(payload)}\n`;
@@ -948,8 +949,21 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
   const messages = [
     {
       role: "system",
-      content:
-        "You are a retrieval planner and optional direct responder. Return JSON only with this schema: {\"can_answer_directly\":boolean,\"confidence\":number,\"direct_answer\":\"\",\"doc_paths\":[\"docs/...md\"]}. Rules: (1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[]. (2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. (3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose at most 4 doc_paths from the document index list. (4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[]. (5) When Frequent Customer Concern link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs. (6) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not answer from claims that depend on them.",
+      content: [
+        "You are a retrieval planner and optional direct responder.",
+        'Return JSON only with this schema: {"can_answer_directly":boolean,"confidence":number,"direct_answer":"","doc_paths":["docs/...md"]}.',
+        "Rules:",
+        "(1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[].",
+        "(2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[].",
+        "(3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose 1-4 doc_paths from the document index by relevance:",
+        "- Interpret short follow-up messages using Recent chat history.",
+        "- Match the visitor's intent semantically against each document's tags and summary, not only exact words.",
+        "- Prefer the smallest set of documents that can answer the request; add documents only when complementary.",
+        "- Never select unrelated documents merely to fill four slots.",
+        "(4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[].",
+        "(5) When Frequent Customer Concern link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs.",
+        "(6) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not answer from claims that depend on them.",
+      ].join("\n"),
     },
     {
       role: "user",
@@ -1048,8 +1062,13 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
   const messages = [
     {
       role: "system",
-      content:
-        "You are assistant for site owners. Use conversation history and selected documents. If unsure, say what information is missing. When Link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs. Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them. Reply in the same language as user input.",
+      content: [
+        "You are assistant for site owners, answer the user's question according to their intent and the conversation context. Reply in the same language as user input.",
+        "Rules:",
+        "(1) Use selected documents as the factual source for your answer. If unsure, say what information is missing.",
+        "(2) When Link candidates contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs.",
+        "(3) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them.",
+      ].join("\n"),
     },
     {
       role: "user",
@@ -1317,17 +1336,21 @@ export async function startChatService(cwd, config, options = {}) {
         const content = (await readTextSafe(paths.widget)) || "<h1>Widget preview is unavailable. Run /run first.</h1>";
         const serviceHost = String(req.headers.host || `127.0.0.1:${port}`);
         const serviceUrl = new URL(`http://${serviceHost}`);
+        const widgetVersion = (await cliVersion()).replace(/^v/, "");
         const widgetUrl = new URL("/openvila/widget.js", serviceUrl);
         widgetUrl.searchParams.set("host", serviceUrl.hostname);
         widgetUrl.searchParams.set("port", serviceUrl.port || String(port));
         widgetUrl.searchParams.set("color", "#0f766e");
+        widgetUrl.searchParams.set("version", widgetVersion);
         const embedUrl = new URL("/openvila/widget.js", serviceUrl);
         embedUrl.searchParams.set("color", "#0f766e");
+        embedUrl.searchParams.set("version", widgetVersion);
         const escapedWidgetUrl = widgetUrl.toString().replace(/&/g, "&amp;").replace(/"/g, "&quot;");
         const escapedEmbedUrl = embedUrl.toString().replace(/&/g, "&amp;").replace(/"/g, "&quot;");
         const preview = content
           .replaceAll("{{OPENVILA_WIDGET_URL}}", escapedWidgetUrl)
-          .replaceAll("{{OPENVILA_EMBED_SNIPPET}}", `&lt;script src=&quot;${escapedEmbedUrl}&quot; defer&gt;&lt;/script&gt;`);
+          .replaceAll("{{OPENVILA_EMBED_SNIPPET}}", `&lt;script src=&quot;${escapedEmbedUrl}&quot; defer&gt;&lt;/script&gt;`)
+          .replaceAll("{{OPENVILA_WIDGET_VERSION}}", widgetVersion);
         sendText(res, 200, preview, "text/html; charset=utf-8");
         return;
       }
