@@ -87,43 +87,6 @@ openvila scan
 openvila run
 ```
 
-## Skills
-
-Skills add executable website capabilities alongside the knowledge base. Use them for tasks such as site search, product lookup, or order-status queries; use knowledge documents for static explanations such as FAQs and policies.
-
-Write the owner-facing definition in natural language under `skills/<name>.md`. It should describe when the Skill applies, values to extract from the visitor message, the HTTP API to call, and how to present results. For example:
-
-```md
-# search
-
-## When to use
-Use this skill when a visitor wants to find a model by name or alias.
-
-## Input
-Extract the requested name from the visitor message.
-
-## Process
-Call GET https://example.com/api/search with the `q` parameter set to the requested name.
-
-## Output
-Return at most five matching items as Markdown links. Do not invent matches.
-```
-
-Manage Skills with:
-
-```bash
-/skill list
-/skill add search
-/skill edit search
-/skill enable search
-/skill disable search
-/skill delete search
-```
-
-`add` and `edit` open the Markdown source in the configured editor, then use the LLM once to compile a runtime definition with the exact HTTP method, URL, parameters, and result instruction. OpenVila prints that definition and requires owner confirmation before enabling it. The confirmed definition and its `enabled` state are stored in `.openvila/skills/<name>.json`; do not put credentials in the Skill Markdown.
-
-During a chat, OpenVila injects only enabled Skill names, usage descriptions, and input descriptions into the selection call. If the LLM chooses a Skill, OpenVila executes the confirmed `GET` or `POST` definition, then sends its result to the existing answer call. The model cannot choose an arbitrary endpoint, and Skills do not add a third LLM call during chats.
-
 ## Human-In-Loop Scan
 
 `/scan` uses a human-in-loop workflow:
@@ -248,6 +211,45 @@ Useful flags:
 - `--yes`: skip interactive confirmation and use defaults
 - `--no-db`: skip scan-plan database tables and automatic database discovery
 - `--no-remote`: skip sitemap planning and crawling
+
+## Skills
+
+Knowledge documents work best for stable, explanatory content such as FAQs, policies, and product descriptions. They are less suitable for large or frequently changing lists, precise lookup rules, or real-time data: scanning can truncate large sources, compilation can omit important lookup behavior, and sending full documents to answer a question is costly.
+
+Use a Skill when the site already has an API or endpoint that can return the exact current result, for example site search, product lookup, order status, availability, or filtered records. A Skill lets the LLM choose a confirmed capability, extract its inputs from the visitor message, and let the existing site logic perform matching, filtering, and link generation.
+
+Write the owner-facing definition in natural language under `skills/<name>.md`. It should describe when the Skill applies, values to extract from the visitor message, the HTTP API to call, and how to present results. For example:
+
+```md
+# search
+
+## When to use
+Use this skill when a visitor wants to find a girl by name or alias.
+
+## Input
+Extract the requested name from the visitor message.
+
+## Process
+Call GET http://localhost:5001/apis/search with the `q` parameter set to the requested name.
+
+## Output
+Api return [{_id, name}, ...], then use [name](/tag/_id) as markdown link for each girl.
+```
+
+Manage Skills with:
+
+```bash
+/skill list
+/skill add search
+/skill edit search
+/skill enable search
+/skill disable search
+/skill delete search
+```
+
+`add` and `edit` open the Markdown source in the configured editor, then use the LLM once to compile a runtime definition with the exact HTTP method, URL, parameters, and result instruction. OpenVila prints that definition and requires owner confirmation before enabling it. The confirmed definition and its `enabled` state are stored in `.openvila/skills/<name>.json`; do not put credentials in the Skill Markdown.
+
+During a chat, OpenVila injects only enabled Skill names, usage descriptions, and input descriptions into the selection call. If the LLM chooses a Skill, OpenVila executes the confirmed `GET` or `POST` definition, then sends its result to the existing answer call. The model cannot choose an arbitrary endpoint, and Skills do not add a third LLM call during chats.
 
 ## Chating+
 

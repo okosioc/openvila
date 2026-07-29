@@ -1096,7 +1096,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
         "Rules:",
         "(1) Use selected documents as the factual source for your answer. If unsure, say what information is missing.",
         "(2) When selected documents contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs.",
-        "(3) Treat Skill results as factual. Follow each Result handling instruction and never mention the skill or API to the visitor.",
+        "(3) Treat Skill results as factual. Follow each Result handling instruction for facts, links, limits, and empty results. For successful results, present the requested items in a brief, natural reply in the user's language. Never mention the skill or API to the visitor.",
       ].join("\n"),
     },
     {

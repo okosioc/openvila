@@ -531,7 +531,7 @@ test("chat executes an enabled skill and provides its result to the answer model
         < llm.requests[0].messages[1].content.indexOf("Frequent Customer Concerns context:"),
     );
     assert.match(llm.requests[0].messages[1].content, /Enabled skills:\n- search \| Search site items by name/);
-    assert.match(llm.requests[1].messages[0].content, /Treat Skill results as factual/);
+    assert.match(llm.requests[1].messages[0].content, /present the requested items in a brief, natural reply in the user's language/);
     assert.match(llm.requests[1].messages[1].content, /"name": "真宝"/);
     assert.match(llm.requests[1].messages[1].content, /Result handling: Return matching items as Markdown links/);
   } finally {
