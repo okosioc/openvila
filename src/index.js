@@ -5,6 +5,7 @@ import readline from "node:readline";
 import { runChannel } from "./commands/channel.js";
 import { runRun } from "./commands/run.js";
 import { runScan } from "./commands/scan.js";
+import { runSkill } from "./commands/skill.js";
 import { runUi } from "./commands/ui.js";
 import { runVila } from "./commands/vila.js";
 import { createRuntimeFileLogger, setGlobalLogWriter } from "./core/logging.js";
@@ -21,7 +22,7 @@ import { normalizeCommandName, parseOptionArgs, splitArgs } from "./utils/args.j
 import { exists } from "./utils/fs.js";
 import { cliVersion } from "./utils/version.js";
 
-const COMMANDS_NEED_RUNTIME = new Set(["scan", "vila", "channel", "run"]);
+const COMMANDS_NEED_RUNTIME = new Set(["scan", "vila", "channel", "skill", "run"]);
 
 function helpText(locale) {
   return pick(
@@ -33,6 +34,7 @@ function helpText(locale) {
       "  /ui                         进入 Ink 交互管理终端",
       "  /scan                       扫描并编译知识库",
       "  /vila ...                   安装/管理精灵",
+      "  /skill ...                  管理网站 Skill",
       "  /channel ...                配置 Telegram/飞书",
       "  /run [--port 9394] [--fork] 启动聊天服务",
       "  /help                       查看帮助",
@@ -47,6 +49,7 @@ function helpText(locale) {
       "  /ui                         Open Ink interactive manager",
       "  /scan                       Scan and compile knowledge base",
       "  /vila ...                   Manage vilas",
+      "  /skill ...                  Manage site skills",
       "  /channel ...                Configure Telegram/Feishu",
       "  /run [--port 9394] [--fork] Start chat service",
       "  /help                       Show help",
@@ -401,6 +404,11 @@ async function executeCommand(ctx, tokens) {
     return true;
   }
 
+  if (command === "skill") {
+    await runSkill(ctx, argv);
+    return true;
+  }
+
   if (command === "channel") {
     await runChannel(ctx, argv);
     return true;
@@ -430,6 +438,7 @@ async function executeWithLogger(ctx, tokens, logger, asker, editor) {
   const originalLog = ctx.log;
   const originalAsk = ctx.ask;
   const originalEditScanPlanText = ctx.editScanPlanText;
+  const originalEditSkillText = ctx.editSkillText;
   const fileLog = ctx.fileLog;
   if (typeof logger === "function") {
     ctx.log = (text) => {
@@ -445,6 +454,7 @@ async function executeWithLogger(ctx, tokens, logger, asker, editor) {
   }
   if (typeof editor === "function") {
     ctx.editScanPlanText = editor;
+    ctx.editSkillText = editor;
   }
   try {
     return await executeCommand(ctx, tokens);
@@ -452,6 +462,7 @@ async function executeWithLogger(ctx, tokens, logger, asker, editor) {
     ctx.log = originalLog;
     ctx.ask = originalAsk;
     ctx.editScanPlanText = originalEditScanPlanText;
+    ctx.editSkillText = originalEditSkillText;
   }
 }
 

@@ -25,6 +25,8 @@ function commandSuggestions(locale) {
     { cmd: "/scan --no-db", desc: pick(locale, "跳过数据库规划和查询", "skip database planning and queries") },
     { cmd: "/scan --no-remote", desc: pick(locale, "跳过 sitemap 规划和抓取", "skip sitemap planning and crawling") },
     { cmd: "/vila list", desc: pick(locale, "查看精灵列表", "list installed vilas") },
+    { cmd: "/skill list", desc: pick(locale, "查看网站 Skill", "list site skills") },
+    { cmd: "/skill add search", desc: pick(locale, "创建自然语言 Skill", "create a natural-language skill") },
     { cmd: "/channel list", desc: pick(locale, "查看通道配置", "show channel config") },
     { cmd: "/run", desc: pick(locale, "启动聊天服务", "start chat service") },
     { cmd: "/run --fork", desc: pick(locale, "在后台启动聊天服务", "start chat service in background") },
@@ -58,7 +60,7 @@ function statusText(locale, ready) {
 function helpLines(locale) {
   return [
     pick(locale, "commands (prefix with /):", "commands (prefix with /):"),
-    "  /scan /vila ... /channel ... /run",
+    "  /scan /vila ... /skill ... /channel ... /run",
     "  /help /exit",
   ];
 }

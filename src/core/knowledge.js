@@ -724,7 +724,7 @@ async function compileDocsBatchByLlm(config, locale, batchItems) {
         "Output constraints:",
         "- Every input id must appear exactly once in docs.",
         "- tags should be short keywords.",
-        "- summary must be a retrieval-oriented abstract of 2-4 information-dense sentences. State the document purpose, key topics or entities, relevant conditions or limits, and available actions or lookup behavior. Use concrete facts from the source; avoid generic wording and never invent facts.",
+        "- summary should be 2-3 sentences stating the document purpose and key facts. Use only facts from the source.",
         "- body must be plain markdown text without HTML tags; retain only meaningful complete Markdown links from the source, never invent URLs, and omit unresolved template placeholders and claims that depend on them.",
         "- is_frequently_asked must be boolean true/false.",
       ].join("\n"),

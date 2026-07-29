@@ -11,6 +11,7 @@ import {
 } from "./handoffs.js";
 import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.js";
 import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
+import { executeSkillCall, listSkills, normalizeSkillCalls } from "./skill.js";
 import { writeGlobalLog } from "./logging.js";
 import { ensureRuntime, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
@@ -927,9 +928,40 @@ function renderDocSelectHistory(chatHistory, limit = DOC_SELECT_HISTORY_LIMIT) {
     .join("\n");
 }
 
+function renderSkillCatalog(skills) {
+  if (!Array.isArray(skills) || skills.length === 0) {
+    return "(none)";
+  }
+
+  return skills
+    .map((skill) => {
+      const inputs = skill.inputs
+        .map((input) => `${input.name}${input.required ? " (required)" : ""}${input.description ? `: ${input.description}` : ""}`)
+        .join(", ");
+      return `- ${skill.name} | ${skill.description} | inputs: ${inputs || "(none)"}`;
+    })
+    .join("\n");
+}
+
+function renderSkillResults(results) {
+  if (!Array.isArray(results) || results.length === 0) {
+    return "(none)";
+  }
+
+  return results
+    .map((result) => [
+      `### ${result.name}`,
+      `Result handling: ${result.result_instruction}`,
+      "Result:",
+      JSON.stringify(result.data, null, 2),
+    ].join("\n"))
+    .join("\n\n");
+}
+
 async function selectDocs(cwd, config, index, question, chatHistory = []) {
   const map = index.index_map || {};
   const entries = Object.entries(map);
+  const enabledSkills = await listSkills(cwd, { enabledOnly: true });
   const listing = entries
     .slice(0, 220)
     .map(([source, item]) => `${item.doc_path} | ${source} | ${(item.tags || []).join(",")} | ${item.summary}`)
@@ -944,23 +976,18 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
       role: "system",
       content: [
         "You are a retrieval planner and optional direct responder.",
-        'Return JSON only with this schema: {"can_answer_directly":boolean,"confidence":number,"direct_answer":"","doc_paths":["docs/...md"]}.',
+        'Return JSON only with this schema: {"can_answer_directly":boolean,"confidence":number,"direct_answer":"","doc_paths":["docs/...md"],"skill_calls":[{"name":"...","input":{}}]}.',
         "Rules:",
         "(1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[].",
-        "(2) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[].",
-        "(3) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose 1-4 doc_paths from the document index by relevance:",
-        "- Interpret short follow-up messages using Recent chat history.",
-        "- Match the visitor's intent semantically against each document's tags and summary, not only exact words.",
-        "- Prefer the smallest set of documents that can answer the request; add documents only when complementary.",
-        "- Never select unrelated documents merely to fill four slots.",
-        "(4) If Frequent Customer Concerns and document index are both empty and this is not small talk, set can_answer_directly=false with doc_paths=[].",
-        "(5) When Frequent Customer Concerns context contains a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits direct_answer; never output the URL as bare text or invent URLs.",
-        "(6) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not answer from claims that depend on them.",
+        "(2) If an enabled skill directly fulfills the visitor's task, set can_answer_directly=false, keep direct_answer empty and doc_paths=[], and choose up to 2 skill_calls. Use its exact name and only its listed input names.",
+        "(3) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[].",
+        "(4) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose the 1 or 2 documents from Document index that best answer the visitor's question using Recent chat history. Set their paths in doc_paths.",
+        "(5) If Frequent Customer Concerns, document index, and enabled skills are all empty and this is not small talk, set can_answer_directly=false with doc_paths=[] and skill_calls=[].",
       ].join("\n"),
     },
     {
       role: "user",
-      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listingText}`,
+      content: `Question:\n${question}\n\nRecent chat history:\n${historyText}\n\nEnabled skills:\n${renderSkillCatalog(enabledSkills)}\n\nFrequent Customer Concerns context:\n${frequentText}\n\nDocument index:\n${listingText}`,
     },
   ];
 
@@ -979,21 +1006,24 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
       };
     }
 
-    if (maybe && Array.isArray(maybe.doc_paths)) {
+    if (maybe && typeof maybe === "object") {
       const available = new Set(entries.map(([, item]) => item.doc_path));
-      const finalPaths = maybe.doc_paths.filter((p) => available.has(p)).slice(0, 4);
-      if (finalPaths.length > 0) {
+      const finalPaths = (Array.isArray(maybe.doc_paths) ? maybe.doc_paths : []).filter((p) => available.has(p)).slice(0, 2);
+      const skillCalls = normalizeSkillCalls(maybe.skill_calls, enabledSkills);
+      if (finalPaths.length > 0 || skillCalls.length > 0) {
         return {
-          mode: "docs",
+          mode: "sources",
           doc_paths: finalPaths,
+          skill_calls: skillCalls,
         };
       }
     }
   }
 
   return {
-    mode: "docs",
-    doc_paths: entries.slice(0, 4).map(([, item]) => item.doc_path).filter(Boolean),
+    mode: "sources",
+    doc_paths: entries.slice(0, 2).map(([, item]) => item.doc_path).filter(Boolean),
+    skill_calls: [],
   };
 }
 
@@ -1025,15 +1055,30 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
     };
   }
 
-  if (entries.length === 0) {
+  const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
+  const skillCalls = Array.isArray(docSelection.skill_calls) ? docSelection.skill_calls : [];
+  if (entries.length === 0 && skillCalls.length === 0) {
     return {
       ok: false,
       error: "Knowledge base is empty. Run /scan first.",
     };
   }
 
-  const docPaths = Array.isArray(docSelection.doc_paths) ? docSelection.doc_paths : [];
   const selectedDocs = await loadDocContents(cwd, docPaths);
+  const skillResults = [];
+  const skillErrors = [];
+  for (const call of skillCalls) {
+    try {
+      skillResults.push(await executeSkillCall(call));
+      writeGlobalLog(`[skill] executed\nname: ${call.skill.name}\ninput_fields: ${Object.keys(call.input).join(",") || "-"}`);
+    } catch (error) {
+      skillErrors.push(`${call.skill.name}: ${error.message}`);
+      writeGlobalLog(`[skill] failed\nname: ${call.skill.name}\nerror: ${sanitizeLogField(error.message)}`);
+    }
+  }
+  if (selectedDocs.length === 0 && skillResults.length === 0 && skillErrors.length > 0) {
+    return { ok: false, error: `Skill request failed: ${skillErrors.join("; ")}` };
+  }
 
   //
   // 2. 生成答案：将用户问题、对话历史和选中文档内容一起发送给语言模型，生成基于知识库的回答。
@@ -1047,16 +1092,16 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
     {
       role: "system",
       content: [
-        "You are assistant for site owners, answer the user's question according to their intent and the conversation context. Reply in the same language as user input.",
+        "You are assistant for site owners, answer the user's question according to their intent and the conversation history. Reply in the same language as user input.",
         "Rules:",
         "(1) Use selected documents as the factual source for your answer. If unsure, say what information is missing.",
         "(2) When selected documents contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs.",
-        "(3) Do not treat unresolved template placeholders such as [price], {{price}}, or ${price} as links or facts, and do not make claims that depend on them.",
+        "(3) Treat Skill results as factual. Follow each Result handling instruction and never mention the skill or API to the visitor.",
       ].join("\n"),
     },
     {
       role: "user",
-      content: `User question:\n${message}\n\nConversation history:\n${historyText}\n\nSelected documents:\n${docsText}`,
+      content: `User question:\n${message}\n\nConversation history:\n${historyText}\n\nSelected documents:\n${docsText || "(none)"}\n\nSkill results:\n${renderSkillResults(skillResults)}`,
     },
   ];
 

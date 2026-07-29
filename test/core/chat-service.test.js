@@ -65,7 +65,7 @@ function sendJson(response, payload) {
   response.end(JSON.stringify(payload));
 }
 
-async function createStreamingLlm() {
+async function createStreamingLlm(options = {}) {
   const requests = [];
   const server = http.createServer(async (request, response) => {
     const body = await readRequestBody(request);
@@ -84,7 +84,9 @@ async function createStreamingLlm() {
       choices: [
         {
           message: {
-            content: JSON.stringify({ can_answer_directly: false, confidence: 0, direct_answer: "", doc_paths: ["docs/faq.md"] }),
+                    content: JSON.stringify(
+                      options.selection || { can_answer_directly: false, confidence: 0, direct_answer: "", doc_paths: ["docs/faq.md"] },
+                    ),
           },
         },
       ],
@@ -94,6 +96,22 @@ async function createStreamingLlm() {
 
   return {
     endpoint: `http://127.0.0.1:${port}`,
+    requests,
+    close: () => closeServer(server),
+  };
+}
+
+async function createSkillApi() {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    requests.push({ method: request.method, path: requestUrl.pathname, query: Object.fromEntries(requestUrl.searchParams) });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ items: [{ name: "真宝", url: "/tag_by_name?name=%E7%9C%9F%E5%AE%9D" }] }));
+  });
+  const port = await listen(server);
+  return {
+    url: `http://127.0.0.1:${port}/search`,
     requests,
     close: () => closeServer(server),
   };
@@ -438,11 +456,9 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(llm.requests[1].stream, true);
     assert.equal(llm.requests[0].max_tokens, 4096);
     assert.equal(llm.requests[1].max_tokens, 4096);
-    assert.match(llm.requests[0].messages[0].content, /Interpret short follow-up messages using Recent chat history/);
-    assert.match(llm.requests[0].messages[0].content, /Match the visitor's intent semantically/);
-    assert.match(llm.requests[0].messages[0].content, /Never select unrelated documents merely to fill four slots/);
+    assert.match(llm.requests[0].messages[0].content, /If an enabled skill directly fulfills the visitor's task/);
+    assert.match(llm.requests[0].messages[0].content, /choose the 1 or 2 documents from Document index that best answer the visitor's question using Recent chat history/);
     assert.match(llm.requests[1].messages[0].content, /selected documents contain a relevant complete Markdown link/);
-    assert.match(llm.requests[1].messages[0].content, /unresolved template placeholders/);
     assert.match(llm.requests[1].messages[0].content, /Rules:\n\(1\).*\n\(2\).*\n\(3\)/s);
     assert.match(llm.requests[1].messages[0].content, /answer the user's question according to their intent/i);
     assert.match(llm.requests[1].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);
@@ -457,6 +473,72 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     await events.close();
     await chat.close();
     await llm.close();
+  }
+});
+
+test("chat executes an enabled skill and provides its result to the answer model", async () => {
+  const skillApi = await createSkillApi();
+  const llm = await createStreamingLlm({
+    selection: {
+      can_answer_directly: false,
+      confidence: 0,
+      direct_answer: "",
+      doc_paths: [],
+      skill_calls: [{ name: "search", input: { query: "真宝" } }],
+    },
+  });
+  const chat = await createChatService({ llm });
+  const events = await openChatEvents(chat.baseUrl, "visitor-skill");
+
+  try {
+    await fs.writeFile(
+      path.join(runtimePaths(chat.cwd).skills, "search.json"),
+      `${JSON.stringify({
+        name: "search",
+        enabled: true,
+        description: "Search site items by name.",
+        inputs: [{ name: "query", description: "Item name", required: true }],
+        request: {
+          method: "GET",
+          url: skillApi.url,
+          query: { q: "{{query}}" },
+          body: {},
+        },
+        result_instruction: "Return matching items as Markdown links.",
+        source_path: "skills/search.md",
+        updated_at: "2026-07-29T00:00:00.000Z",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const response = await requestJson(chat.baseUrl, "/openvila/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "visitor-skill",
+        client_message_id: "skill-request",
+        message: "find 真宝",
+      }),
+    });
+    assert.equal(response.status, 202);
+    await events.waitForEvent(
+      (event) => event.event === "message" && event.data.role === "assistant" && event.data.content === "Hello from Vila",
+      "completed skill reply",
+    );
+
+    assert.deepEqual(skillApi.requests, [{ method: "GET", path: "/search", query: { q: "真宝" } }]);
+    assert.ok(
+      llm.requests[0].messages[1].content.indexOf("Enabled skills:")
+        < llm.requests[0].messages[1].content.indexOf("Frequent Customer Concerns context:"),
+    );
+    assert.match(llm.requests[0].messages[1].content, /Enabled skills:\n- search \| Search site items by name/);
+    assert.match(llm.requests[1].messages[0].content, /Treat Skill results as factual/);
+    assert.match(llm.requests[1].messages[1].content, /"name": "真宝"/);
+    assert.match(llm.requests[1].messages[1].content, /Result handling: Return matching items as Markdown links/);
+  } finally {
+    await events.close();
+    await chat.close();
+    await llm.close();
+    await skillApi.close();
   }
 });
 

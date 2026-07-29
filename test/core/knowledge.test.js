@@ -361,7 +361,7 @@ test("buildKnowledgeBase forwards raw source content to the document compiler", 
   assert.equal(result.compiled, 1);
   assert.match(compilerRequest.messages[1].content, /<name>/);
   assert.match(compilerRequest.messages[1].content, /<a href="\/dash\/buy-vip">Buy VIP<\/a>/);
-  assert.match(compilerRequest.messages[1].content, /summary must be a retrieval-oriented abstract of 2-4 information-dense sentences/);
+  assert.match(compilerRequest.messages[1].content, /summary should be 2-3 sentences stating the document purpose and key facts/);
 });
 
 test("buildKnowledgeBase preserves Markdown formatting returned by the LLM", async (context) => {

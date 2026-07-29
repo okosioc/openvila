@@ -31,6 +31,8 @@ export function runtimePaths(cwd) {
     runtimeGitignore: path.join(base, ".gitignore"),
     knowledges: path.join(base, "knowledges"),
     knowledgeDocs: path.join(base, "knowledges", "docs"),
+    skills: path.join(base, "skills"),
+    skillSources: path.join(cwd, "skills"),
     vilas: path.join(base, "vilas"),
     logs: path.join(base, "logs"),
     chats: path.join(base, "chats"),
@@ -138,6 +140,7 @@ async function ensureRuntimeDirectories(paths) {
   await ensureDir(paths.base);
   await ensureDir(paths.knowledges);
   await ensureDir(paths.knowledgeDocs);
+  await ensureDir(paths.skills);
   await ensureDir(paths.vilas);
   await ensureDir(paths.logs);
   await ensureDir(paths.chats);

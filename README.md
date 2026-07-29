@@ -70,6 +70,10 @@ node src/index.js run
 /scan [--yes] [--dry-run] [--reset] [--no-filesystem] [--no-db] [--no-remote]
 /vila list
 /vila install demo --file ./demo-vila.json
+/skill list
+/skill add search
+/skill edit search
+/skill enable|disable|delete search
 /channel set telegram --bot-token xxx --chat-id yyy [--endpoint https://...]
 /channel set feishu --webhook https://open.feishu.cn/...
 /channel test telegram
@@ -82,6 +86,43 @@ Direct command mode is also supported:
 openvila scan
 openvila run
 ```
+
+## Skills
+
+Skills add executable website capabilities alongside the knowledge base. Use them for tasks such as site search, product lookup, or order-status queries; use knowledge documents for static explanations such as FAQs and policies.
+
+Write the owner-facing definition in natural language under `skills/<name>.md`. It should describe when the Skill applies, values to extract from the visitor message, the HTTP API to call, and how to present results. For example:
+
+```md
+# search
+
+## When to use
+Use this skill when a visitor wants to find a model by name or alias.
+
+## Input
+Extract the requested name from the visitor message.
+
+## Process
+Call GET https://example.com/api/search with the `q` parameter set to the requested name.
+
+## Output
+Return at most five matching items as Markdown links. Do not invent matches.
+```
+
+Manage Skills with:
+
+```bash
+/skill list
+/skill add search
+/skill edit search
+/skill enable search
+/skill disable search
+/skill delete search
+```
+
+`add` and `edit` open the Markdown source in the configured editor, then use the LLM once to compile a runtime definition with the exact HTTP method, URL, parameters, and result instruction. OpenVila prints that definition and requires owner confirmation before enabling it. The confirmed definition and its `enabled` state are stored in `.openvila/skills/<name>.json`; do not put credentials in the Skill Markdown.
+
+During a chat, OpenVila injects only enabled Skill names, usage descriptions, and input descriptions into the selection call. If the LLM chooses a Skill, OpenVila executes the confirmed `GET` or `POST` definition, then sends its result to the existing answer call. The model cannot choose an arbitrary endpoint, and Skills do not add a third LLM call during chats.
 
 ## Human-In-Loop Scan
 
@@ -310,6 +351,8 @@ On first UI launch, OpenVila asks for confirmation, then creates runtime files i
 ```text
 my-website/
   ...
+  skills/
+    search.md
   .openvila/
     .gitignore
     config.yaml
@@ -319,6 +362,8 @@ my-website/
       manifest.json
       docs/
     vilas/
+    skills/
+      search.json
     logs/
     chats/
       <session-id>.json
@@ -443,7 +488,7 @@ To release, update `package.json` to the target version, commit the change, then
 - [ ] Let the Widget use browser notifications to alert visitors when human support replies.
 - [ ] Include the current page URL, logged-in visitor identity, IP address, and country in the first human-takeover notification.
 - [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
-- [ ] Add Skills that call existing website APIs, such as search.
+- [x] Add Skills that call existing website APIs, such as search.
 - [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
 - [x] Support `http://` and `https://` entries in `scan-plan` by fetching those pages through the remote scan flow.
 - [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
