@@ -137,6 +137,64 @@ function sanitizeLogField(value, maxLen = MAX_LOG_FIELD_LENGTH) {
   return `${normalized.slice(0, maxLen)}...`;
 }
 
+function isSensitiveSkillLogField(name) {
+  return /(authorization|api[_-]?key|cookie|password|passwd|secret|session|token)/i.test(String(name || ""));
+}
+
+function renderSkillLogValue(value) {
+  const rendered = JSON.stringify(value, (key, item) => (isSensitiveSkillLogField(key) ? "[redacted]" : item));
+  return sanitizeLogField(rendered || "-", 2000);
+}
+
+function renderSkillLogUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    for (const key of new Set(url.searchParams.keys())) {
+      if (isSensitiveSkillLogField(key)) {
+        url.searchParams.set(key, "[redacted]");
+      }
+    }
+    return sanitizeLogField(url.toString(), 2000);
+  } catch {
+    return sanitizeLogField(value, 2000);
+  }
+}
+
+function skillRequestLogLines(request, input) {
+  const details = request && typeof request === "object" ? request : {};
+  return [
+    `method: ${sanitizeLogField(details.method || "")}`,
+    `url: ${renderSkillLogUrl(details.url)}`,
+    `input: ${renderSkillLogValue(input)}`,
+    `query: ${renderSkillLogValue(details.query)}`,
+    `body: ${renderSkillLogValue(details.body)}`,
+  ];
+}
+
+function skillErrorLogLines(error) {
+  const lines = [`error: ${sanitizeLogField(error?.message)}`];
+  let cause = error?.cause;
+  let depth = 0;
+  while (cause && typeof cause === "object" && depth < 3) {
+    const label = depth === 0 ? "cause" : `cause_${depth + 1}`;
+    lines.push(`${label}: ${sanitizeLogField(`${cause.name || "Error"}: ${cause.message || ""}`)}`);
+    if (cause.code) lines.push(`${label}_code: ${sanitizeLogField(cause.code)}`);
+    if (cause.syscall) lines.push(`${label}_syscall: ${sanitizeLogField(cause.syscall)}`);
+    if (cause.address) lines.push(`${label}_address: ${sanitizeLogField(cause.address)}`);
+    if (cause.port) lines.push(`${label}_port: ${sanitizeLogField(cause.port)}`);
+    cause = cause.cause;
+    depth += 1;
+  }
+  if (error?.skill_timeout_ms) lines.push(`timeout_ms: ${sanitizeLogField(error.skill_timeout_ms)}`);
+  if (error?.skill_response) {
+    lines.push(`response_status: ${sanitizeLogField(error.skill_response.status)}`);
+    lines.push(`response_status_text: ${sanitizeLogField(error.skill_response.status_text)}`);
+    lines.push(`response_content_type: ${sanitizeLogField(error.skill_response.content_type)}`);
+    lines.push(`response_body: ${sanitizeLogField(error.skill_response.body, 1000)}`);
+  }
+  return lines;
+}
+
 function fullLogText(value) {
   return String(value ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n") || "(empty)";
 }
@@ -935,10 +993,10 @@ function renderSkillCatalog(skills) {
 
   return skills
     .map((skill) => {
-      const inputs = skill.inputs
+      const inputs = skill.input_schema
         .map((input) => `${input.name}${input.required ? " (required)" : ""}${input.description ? `: ${input.description}` : ""}`)
         .join(", ");
-      return `- ${skill.name} | ${skill.description} | inputs: ${inputs || "(none)"}`;
+      return `- ${skill.name} | ${skill.when_to_use} | inputs: ${inputs || "(none)"}`;
     })
     .join("\n");
 }
@@ -951,7 +1009,7 @@ function renderSkillResults(results) {
   return results
     .map((result) => [
       `### ${result.name}`,
-      `Result handling: ${result.result_instruction}`,
+      `Output instruction: ${result.output_instruction}`,
       "Result:",
       JSON.stringify(result.data, null, 2),
     ].join("\n"))
@@ -1069,11 +1127,24 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
   const skillErrors = [];
   for (const call of skillCalls) {
     try {
-      skillResults.push(await executeSkillCall(call));
-      writeGlobalLog(`[skill] executed\nname: ${call.skill.name}\ninput_fields: ${Object.keys(call.input).join(",") || "-"}`);
+      const result = await executeSkillCall(call);
+      skillResults.push(result);
+      writeGlobalLog([
+        "[skill] executed",
+        `name: ${call.skill.name}`,
+        ...skillRequestLogLines(result.request, call.input),
+        `response_status: ${sanitizeLogField(result.response?.status)}`,
+        `response_status_text: ${sanitizeLogField(result.response?.status_text)}`,
+        `response_content_type: ${sanitizeLogField(result.response?.content_type)}`,
+      ].join("\n"));
     } catch (error) {
       skillErrors.push(`${call.skill.name}: ${error.message}`);
-      writeGlobalLog(`[skill] failed\nname: ${call.skill.name}\nerror: ${sanitizeLogField(error.message)}`);
+      writeGlobalLog([
+        "[skill] failed",
+        `name: ${call.skill.name}`,
+        ...skillRequestLogLines(error.skill_request, call.input),
+        ...skillErrorLogLines(error),
+      ].join("\n"));
     }
   }
   if (selectedDocs.length === 0 && skillResults.length === 0 && skillErrors.length > 0) {
@@ -1096,7 +1167,7 @@ async function answerFromKnowledge(cwd, config, message, chatHistory = [], optio
         "Rules:",
         "(1) Use selected documents as the factual source for your answer. If unsure, say what information is missing.",
         "(2) When selected documents contain a relevant complete Markdown link, use its exact URL in a Markdown link with text that fits your answer. Never output a provided URL as bare text, and never invent URLs.",
-        "(3) Treat Skill results as factual. Follow each Result handling instruction for facts, links, limits, and empty results. For successful results, present the requested items in a brief, natural reply in the user's language. Never mention the skill or API to the visitor.",
+        "(3) Treat Skill results as factual. Follow each Output instruction for facts, links, limits, and empty results. For successful results, present the requested items in a brief, natural reply in the user's language. Never mention the skill or API to the visitor.",
       ].join("\n"),
     },
     {

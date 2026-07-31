@@ -6,6 +6,7 @@ import { exists, readTextSafe, writeText } from "../utils/fs.js";
 
 const SKILL_NAME_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 const SKILL_RESPONSE_MAX_CHARS = 60000;
+const SKILL_REQUEST_TIMEOUT_MS = 10000;
 
 function normalizeSkillName(value) {
   const name = String(value || "").trim().toLowerCase();
@@ -15,7 +16,7 @@ function normalizeSkillName(value) {
   return name;
 }
 
-function normalizeInputs(value) {
+function normalizeInputSchema(value) {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -52,15 +53,15 @@ function normalizeTemplateMap(value) {
   return output;
 }
 
-function normalizeRequest(value) {
+function normalizeProcess(value) {
   if (!value || typeof value !== "object") {
-    throw new Error("Skill compiler did not return a request definition");
+    throw new Error("Skill compiler did not return a process definition");
   }
 
   const method = String(value.method || "GET").trim().toUpperCase();
   const url = String(value.url || "").trim();
   if (method !== "GET" && method !== "POST") {
-    throw new Error("Skill request method must be GET or POST");
+    throw new Error("Skill process method must be GET or POST");
   }
   try {
     const parsed = new URL(url);
@@ -68,7 +69,7 @@ function normalizeRequest(value) {
       throw new Error("unsupported protocol");
     }
   } catch {
-    throw new Error("Skill request URL must be an absolute http(s) URL");
+    throw new Error("Skill process URL must be an absolute http(s) URL");
   }
 
   return {
@@ -90,42 +91,42 @@ function templateInputs(value) {
   return inputs;
 }
 
-function validateRequestInputs(request, inputs) {
-  const available = new Set(inputs.map((input) => input.name));
-  const values = [request.url, ...Object.values(request.query), ...Object.values(request.body)];
+function validateProcessInputs(process, inputSchema) {
+  const available = new Set(inputSchema.map((input) => input.name));
+  const values = [process.url, ...Object.values(process.query), ...Object.values(process.body)];
   for (const value of values) {
     for (const name of templateInputs(value)) {
       if (!available.has(name)) {
-        throw new Error(`Skill request references undeclared input: ${name}`);
+        throw new Error(`Skill process references undeclared input: ${name}`);
       }
     }
   }
-  if (request.method === "GET" && Object.keys(request.body).length > 0) {
-    throw new Error("GET Skill requests cannot define a body");
+  if (process.method === "GET" && Object.keys(process.body).length > 0) {
+    throw new Error("GET Skill processes cannot define a body");
   }
 }
 
 function normalizeSkillDefinition(name, value, options = {}) {
-  const description = String(value?.description || "").trim();
-  const resultInstruction = String(value?.result_instruction || "").trim();
-  if (!description) {
-    throw new Error("Skill compiler did not return a description");
+  const whenToUse = String(value?.when_to_use || value?.description || "").trim();
+  const outputInstruction = String(value?.output_instruction || value?.result_instruction || "").trim();
+  if (!whenToUse) {
+    throw new Error("Skill compiler did not return when_to_use");
   }
-  if (!resultInstruction) {
-    throw new Error("Skill compiler did not return result_instruction");
+  if (!outputInstruction) {
+    throw new Error("Skill compiler did not return output_instruction");
   }
 
-  const inputs = normalizeInputs(value?.inputs);
-  const request = normalizeRequest(value?.request);
-  validateRequestInputs(request, inputs);
+  const inputSchema = normalizeInputSchema(value?.input_schema || value?.inputs);
+  const process = normalizeProcess(value?.process || value?.request);
+  validateProcessInputs(process, inputSchema);
 
   return {
     name: normalizeSkillName(name),
     enabled: options.enabled !== undefined ? Boolean(options.enabled) : Boolean(value?.enabled),
-    description,
-    inputs,
-    request,
-    result_instruction: resultInstruction,
+    when_to_use: whenToUse,
+    input_schema: inputSchema,
+    process,
+    output_instruction: outputInstruction,
     source_path: String(options.sourcePath || value?.source_path || "").trim(),
     updated_at: String(options.updatedAt || value?.updated_at || new Date().toISOString()),
   };
@@ -144,7 +145,7 @@ function applyTemplate(value, input, encode = false) {
 function normalizeSkillInput(skill, value) {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const input = {};
-  for (const field of skill.inputs) {
+  for (const field of skill.input_schema) {
     const text = String(raw[field.name] ?? "").trim();
     if (field.required && !text) {
       return null;
@@ -184,11 +185,12 @@ export function skillTemplate(name) {
     "Describe the HTTP method, complete API URL, request parameters, and how input values are used.",
     "",
     "## Output",
-    "Describe how to present a successful result, an empty result, and any visitor-facing limits.",
+    "Describe returned fields, exact visitor-facing transformations or links, empty-result behavior, and any limits.",
     "",
   ].join("\n");
 }
 
+// 核心逻辑! 将用户输入的md文件编译为可以被代码处理的json格式
 export async function compileSkillMarkdown(config, name, source) {
   const skillName = normalizeSkillName(name);
   const messages = [
@@ -196,9 +198,9 @@ export async function compileSkillMarkdown(config, name, source) {
       role: "system",
       content: [
         "You compile a site owner's natural-language Skill document into a confirmed runtime definition.",
-        'Return JSON only: {"description":"...","inputs":[{"name":"query","description":"...","required":true}],"request":{"method":"GET","url":"https://...","query":{"q":"{{query}}"},"body":{}},"result_instruction":"..."}.',
+        'Return JSON only: {"when_to_use":"...","input_schema":[{"name":"query","description":"...","required":true}],"process":{"method":"GET","url":"https://...","query":{"q":"{{query}}"},"body":{}},"output_instruction":"..."}.',
         "Use only HTTP method, URL, parameters, and result behavior explicitly stated in the source document. Never invent an API endpoint, parameter, or result field.",
-        "description must state when the skill should be used. inputs must contain only values needed by the request. request supports GET or POST only. result_instruction must describe visitor-facing output without mentioning the skill or API.",
+        "when_to_use must state when the Skill should be used. input_schema must contain only values needed by process. process supports GET or POST only. output_instruction preserves the returned fields and visitor-facing transformation.",
       ].join("\n"),
     },
     {
@@ -306,35 +308,48 @@ export function normalizeSkillCalls(rawCalls, skills) {
 export async function executeSkillCall(call) {
   const skill = call?.skill;
   const input = call?.input || {};
-  if (!skill || !skill.request) {
+  if (!skill || !skill.process) {
     throw new Error("Skill call is invalid");
   }
 
-  const url = new URL(applyTemplate(skill.request.url, input, true));
-  for (const [key, value] of Object.entries(skill.request.query || {})) {
+  const url = new URL(applyTemplate(skill.process.url, input, true));
+  for (const [key, value] of Object.entries(skill.process.query || {})) {
     url.searchParams.set(key, applyTemplate(value, input));
   }
 
+  const request = {
+    method: skill.process.method,
+    url: url.toString(),
+    query: Object.fromEntries(url.searchParams),
+    body: null,
+  };
+
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timer = setTimeout(() => controller.abort(), SKILL_REQUEST_TIMEOUT_MS);
   try {
     const options = {
-      method: skill.request.method,
+      method: request.method,
       signal: controller.signal,
       headers: {},
     };
-    if (skill.request.method === "POST") {
+    if (request.method === "POST") {
       options.headers["Content-Type"] = "application/json";
-      options.body = JSON.stringify(
-        Object.fromEntries(
-          Object.entries(skill.request.body || {}).map(([key, value]) => [key, applyTemplate(value, input)]),
-        ),
+      request.body = Object.fromEntries(
+        Object.entries(skill.process.body || {}).map(([key, value]) => [key, applyTemplate(value, input)]),
       );
+      options.body = JSON.stringify(request.body);
     }
     const response = await fetch(url, options);
     const raw = trimResponseText(await response.text());
+    const responseInfo = {
+      status: response.status,
+      status_text: response.statusText,
+      content_type: response.headers.get("content-type") || "",
+    };
     if (!response.ok) {
-      throw new Error(`Skill request failed: HTTP ${response.status}${raw ? `: ${raw.slice(0, 500)}` : ""}`);
+      const error = new Error(`Skill request failed: HTTP ${response.status}${raw ? `: ${raw.slice(0, 500)}` : ""}`);
+      error.skill_response = { ...responseInfo, body: raw.slice(0, 1000) };
+      throw error;
     }
     let data = raw;
     try {
@@ -342,9 +357,19 @@ export async function executeSkillCall(call) {
     } catch {}
     return {
       name: skill.name,
-      result_instruction: skill.result_instruction,
+      output_instruction: skill.output_instruction,
       data,
+      request,
+      response: responseInfo,
     };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      error.skill_request = request;
+      if (controller.signal.aborted) {
+        error.skill_timeout_ms = SKILL_REQUEST_TIMEOUT_MS;
+      }
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }

@@ -230,11 +230,20 @@ Use this skill when a visitor wants to find a girl by name or alias.
 Extract the requested name from the visitor message.
 
 ## Process
-Call GET http://localhost:5001/apis/search with the `q` parameter set to the requested name.
+Call GET http://127.0.0.1:5001/apis/search with the `q` parameter set to the requested name.
 
 ## Output
-Api return [{_id, name}, ...], then use [name](/tag/_id) as markdown link for each girl.
+Api return list of girls [{id, name}, ...], then display [name](/tag/id) as markdown link for each girl.
 ```
+
+The compiled `skill.json` mirrors these four Markdown sections:
+
+- `When to use` → `when_to_use`
+- `Input` → `input_schema`
+- `Process` → `process`
+- `Output` → `output_instruction`
+
+`output_instruction` preserves the returned fields and visitor-facing transformation, such as using `_id` to construct a Markdown link URL. `name`, `enabled`, `source_path`, and `updated_at` are OpenVila runtime metadata.
 
 Manage Skills with:
 

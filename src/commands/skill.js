@@ -109,7 +109,7 @@ export async function runSkill(ctx, argv, dependencies = {}) {
     }
     ctx.log(
       skills
-        .map((skill) => `${skill.name}\t${skill.enabled ? "enabled" : "disabled"}\t${skill.description}`)
+        .map((skill) => `${skill.name}\t${skill.enabled ? "enabled" : "disabled"}\t${skill.when_to_use}`)
         .join("\n"),
     );
     return;

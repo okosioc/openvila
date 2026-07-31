@@ -489,6 +489,8 @@ test("chat executes an enabled skill and provides its result to the answer model
   });
   const chat = await createChatService({ llm });
   const events = await openChatEvents(chat.baseUrl, "visitor-skill");
+  const logger = await createRuntimeFileLogger(chat.cwd);
+  setGlobalLogWriter((text) => logger.append(text));
 
   try {
     await fs.writeFile(
@@ -496,15 +498,15 @@ test("chat executes an enabled skill and provides its result to the answer model
       `${JSON.stringify({
         name: "search",
         enabled: true,
-        description: "Search site items by name.",
-        inputs: [{ name: "query", description: "Item name", required: true }],
-        request: {
+        when_to_use: "Search site items by name.",
+        input_schema: [{ name: "query", description: "Item name", required: true }],
+        process: {
           method: "GET",
           url: skillApi.url,
           query: { q: "{{query}}" },
           body: {},
         },
-        result_instruction: "Return matching items as Markdown links.",
+        output_instruction: "Return matching items as Markdown links.",
         source_path: "skills/search.md",
         updated_at: "2026-07-29T00:00:00.000Z",
       }, null, 2)}\n`,
@@ -531,14 +533,88 @@ test("chat executes an enabled skill and provides its result to the answer model
         < llm.requests[0].messages[1].content.indexOf("Frequent Customer Concerns context:"),
     );
     assert.match(llm.requests[0].messages[1].content, /Enabled skills:\n- search \| Search site items by name/);
-    assert.match(llm.requests[1].messages[0].content, /present the requested items in a brief, natural reply in the user's language/);
+    assert.match(llm.requests[1].messages[0].content, /Follow each Output instruction/);
     assert.match(llm.requests[1].messages[1].content, /"name": "真宝"/);
-    assert.match(llm.requests[1].messages[1].content, /Result handling: Return matching items as Markdown links/);
+    assert.match(llm.requests[1].messages[1].content, /Output instruction: Return matching items as Markdown links/);
+    await logger.flush();
+    const logText = await fs.readFile(logger.logFilePath, "utf8");
+    assert.match(logText, /\[skill\] executed\nname: search\nmethod: GET\nurl: .*\/search\?q=%E7%9C%9F%E5%AE%9D/);
+    assert.match(logText, /input: \{"query":"真宝"\}/);
+    assert.match(logText, /query: \{"q":"真宝"\}/);
+    assert.match(logText, /response_status: 200/);
   } finally {
+    setGlobalLogWriter(null);
     await events.close();
     await chat.close();
     await llm.close();
     await skillApi.close();
+  }
+});
+
+test("chat logs Skill request details and network failure causes", async () => {
+  const port = await availablePort();
+  const llm = await createStreamingLlm({
+    selection: {
+      can_answer_directly: false,
+      confidence: 0,
+      direct_answer: "",
+      doc_paths: [],
+      skill_calls: [{ name: "search", input: { query: "小仓" } }],
+    },
+  });
+  const chat = await createChatService({ llm });
+  const events = await openChatEvents(chat.baseUrl, "visitor-skill-error");
+  const logger = await createRuntimeFileLogger(chat.cwd);
+  setGlobalLogWriter((text) => logger.append(text));
+
+  try {
+    await fs.writeFile(
+      path.join(runtimePaths(chat.cwd).skills, "search.json"),
+      `${JSON.stringify({
+        name: "search",
+        enabled: true,
+        when_to_use: "Search site items by name.",
+        input_schema: [{ name: "query", description: "Item name", required: true }],
+        process: {
+          method: "GET",
+          url: `http://127.0.0.1:${port}/search`,
+          query: { q: "{{query}}" },
+          body: {},
+        },
+        output_instruction: "Return matching items as Markdown links.",
+        source_path: "skills/search.md",
+        updated_at: "2026-07-31T00:00:00.000Z",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const response = await requestJson(chat.baseUrl, "/openvila/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "visitor-skill-error",
+        client_message_id: "skill-error-request",
+        message: "find 小仓",
+      }),
+    });
+    assert.equal(response.status, 202);
+    await events.waitForEvent(
+      (event) => event.event === "message" && event.data.role === "assistant" && event.data.content.includes("Skill request failed: search: fetch failed"),
+      "failed skill reply",
+    );
+
+    await logger.flush();
+    const logText = await fs.readFile(logger.logFilePath, "utf8");
+    assert.match(logText, new RegExp(`\\[skill\\] failed\\nname: search\\nmethod: GET\\nurl: http://127\\.0\\.0\\.1:${port}/search\\?q=%E5%B0%8F%E4%BB%93`));
+    assert.match(logText, /input: \{"query":"小仓"\}/);
+    assert.match(logText, /query: \{"q":"小仓"\}/);
+    assert.match(logText, /error: fetch failed/);
+    assert.match(logText, /cause_code: ECONNREFUSED/);
+    assert.match(logText, new RegExp(`cause_port: ${port}`));
+  } finally {
+    setGlobalLogWriter(null);
+    await events.close();
+    await chat.close();
+    await llm.close();
   }
 });
 

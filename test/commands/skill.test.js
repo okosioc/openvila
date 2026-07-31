@@ -10,15 +10,15 @@ function compiledSkill() {
   return {
     name: "search",
     enabled: true,
-    description: "Search site items by name.",
-    inputs: [{ name: "query", description: "Item name", required: true }],
-    request: {
+    when_to_use: "Search site items by name.",
+    input_schema: [{ name: "query", description: "Item name", required: true }],
+    process: {
       method: "GET",
       url: "http://127.0.0.1:5001/api/search",
       query: { q: "{{query}}" },
       body: {},
     },
-    result_instruction: "Return matching items as Markdown links.",
+    output_instruction: "Return matching items as Markdown links.",
     source_path: "skills/search.md",
     updated_at: "2026-07-29T00:00:00.000Z",
   };
