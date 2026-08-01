@@ -1,12 +1,12 @@
 # OpenVila
 
-OpenVila is a local REPL tool for independent site owners.
+OpenVila is an open-source customer service system powered by LLMs.
+
 It supports:
-- scanning website content into a markdown knowledge base
-- serving a chat widget
-- managing vilas
-- configuring owner channels (Telegram/Feishu)
-- running a local chat service
+- scanning documents, database records, and remote URLs, then using an LLM to compile them into a knowledge base
+- a built-in chat service and website widget that answers from the knowledge base, with Telegram and other owner channels for human handoff
+- custom Skills for precise tasks that knowledge-base answers cannot reliably complete
+- custom chat companions (Vilas)
 
 ## Install OpenVila CLI
 
@@ -87,7 +87,31 @@ openvila scan
 openvila run
 ```
 
-## Human-In-Loop Scan
+## Knowledges
+
+`/scan` builds the knowledge base from selected filesystem files, database records, and remote URLs. Each source is compiled into a Markdown document under `knowledges/`. During a visitor chat, Vila uses the selected knowledge documents as the factual basis for its answer.
+
+### Organization
+
+`knowledges/` is generated from the sources selected by `scan-plan`:
+
+```text
+.openvila/knowledges/
+  index.md
+  manifest.json
+  docs/
+    fs-*.md
+    db_*.md
+    remote-*.md
+```
+
+- `docs/fs-*.md`: one compiled document per selected filesystem file.
+- `docs/db_*.md`: one compiled document per database row. OpenVila reads every field from each returned row, serializes the row as formatted JSON, then sends it to the LLM to compile into a markdown document with normalized title, summary, tags, FAQ flag, and body.
+- `docs/remote-*.md`: one compiled document per sitemap page when remote scanning is enabled.
+- `index.md`: generated index with `Frequent Customer Concerns` and `All Documents` sections.
+- `manifest.json`: generated source hashes, source-to-document mapping, `index_map`, frequent source list, and LLM call stats; do not edit it.
+
+### Scan
 
 `/scan` uses a human-in-loop workflow:
 1. on the first scan, or with `--reset`, LLM identifies framework and knowledge files from candidate file list
@@ -104,7 +128,7 @@ Before LLM planning, `/scan` follows root `.gitignore`, skips styles (`.css`, `.
 
 `/scan` requires working LLM settings: `openvila_llm_endpoint`, `openvila_llm_api_key`, `openvila_llm_model`.
 
-### Scan Plan
+#### Scan Plan
 
 After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite it, then fully rebuild the knowledge base.
 
@@ -157,31 +181,11 @@ Database scan behavior:
 - database access uses Node drivers (`sqlite3` / `mysql2` / `pg` / `mongodb`), no external DB CLI requirement
 - add or remove database tables by adding or removing `<connection_url>::<table>` lines; unsupported database engines and failed table queries are logged while other sources continue
 
-### Knowledges
-
-`knowledges/` is generated from the sources selected by `scan-plan`:
-
-```text
-.openvila/knowledges/
-  index.md
-  manifest.json
-  docs/
-    fs-*.md
-    db_*.md
-    remote-*.md
-```
-
-- `docs/fs-*.md`: one compiled document per selected filesystem file.
-- `docs/db_*.md`: one compiled document per database row. OpenVila reads every field from each returned row, serializes the row as formatted JSON, then sends it to the LLM to compile into a markdown document with normalized title, summary, tags, FAQ flag, and body.
-- `docs/remote-*.md`: one compiled document per sitemap page when remote scanning is enabled.
-- `index.md`: generated index with `Frequent Customer Concerns` and `All Documents` sections.
-- `manifest.json`: generated source hashes, source-to-document mapping, `index_map`, frequent source list, and LLM call stats; do not edit it.
+#### Document Compilation
 
 Before compilation, source text only has NUL characters and surrounding whitespace removed, then is limited by `scan.llm_compile_doc_chars`. HTML, template syntax, and links are passed to the LLM unchanged. The LLM removes HTML and unsafe content, and may turn meaningful source links into Markdown links in the compiled document; answers can reuse only those complete Markdown links.
 
 Only added or changed source hashes are sent to the LLM for compilation; unchanged compiled documents are reused. Database rows are limited by `scan.db_auto_query_limit` in `config.yaml` (default `80`). Source planning uses `scan.llm_plan_max_tokens` (default `4800`).
-
-### LLM Compilation
 
 Configure the LLM document compiler in `.openvila/config.yaml`:
 
