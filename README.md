@@ -311,7 +311,7 @@ location /openvila/chat/ {
 
 The widget subscribes to `GET /openvila/chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
 
-When Telegram human support is active, closing the Widget only hides its panel and keeps its SSE connection open. A human reply received while hidden shows an unread dot on the launcher; opening the Widget clears the dot. Normal AI chats still stop listening when the panel closes.
+When Telegram human support is active, closing the Widget only hides its panel and keeps its SSE connection open. The active handoff session is stored in same-origin browser storage, so a later page that includes the Widget resumes the hidden listener without creating a new session. A human reply received while hidden shows an unread dot on the launcher; opening the Widget clears the dot. Normal AI chats still stop listening when the panel closes.
 
 The Widget input also supports these exact commands:
 

@@ -108,7 +108,7 @@ class FakeDocument {
 function createWidgetHarness(options = {}) {
   const document = new FakeDocument(options.scriptAttributes);
   const eventSources = [];
-  const storage = new Map();
+  const storage = new Map(Object.entries(options.storage || {}));
   const fetchCalls = [];
   let uuidSequence = 0;
 
@@ -146,7 +146,7 @@ function createWidgetHarness(options = {}) {
     if (String(url).includes("/openvila/chat/history")) {
       return {
         ok: true,
-        json: async () => ({ messages: [], handoff: { active: false } }),
+        json: async () => options.historyPayload || ({ messages: [], handoff: { active: false } }),
       };
     }
     if (options.failPost) {
@@ -228,6 +228,16 @@ test("widget creates a session only after a trusted launcher click", async () =>
   await launcher.emit("click", { isTrusted: true });
   assert.match(harness.storage.get("openvila_session_id"), /^session-/);
   assert.equal(harness.fetchCalls.filter((call) => String(call.url).includes("/openvila/chat/history")).length, 1);
+});
+
+test("widget does not restore an ordinary session while the panel is hidden", async () => {
+  const harness = await loadWidget({
+    open: false,
+    storage: { openvila_session_id: "session-ordinary" },
+  });
+
+  assert.equal(harness.eventSources.length, 0);
+  assert.equal(harness.fetchCalls.length, 0);
 });
 
 test("widget uses a visitor-facing title with OpenVila attribution", async () => {
@@ -401,6 +411,33 @@ test("widget keeps listening during human support and marks a hidden reply unrea
 
   await close.emit("click");
   eventSource.emit("handoff", { data: JSON.stringify({ active: false, updated_at: "2026-07-27T00:00:01.000Z" }) });
+  assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
+});
+
+test("widget restores a hidden human-support listener on a later page", async () => {
+  const sessionId = "session-existing-handoff";
+  const harness = await loadWidget({
+    open: false,
+    storage: {
+      openvila_session_id: sessionId,
+      openvila_handoff_session_id: sessionId,
+    },
+    historyPayload: { messages: [], handoff: { active: true, updated_at: "2026-08-02T00:00:00.000Z" } },
+  });
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const unreadIndicator = launcher.children.at(-1);
+  const eventSource = harness.eventSources[0];
+
+  assert.match(eventSource.url, /session_id=session-existing-handoff/);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).includes("/openvila/chat/history")).length, 1);
+
+  eventSource.emit("message", {
+    data: JSON.stringify({ id: "later-page-reply", role: "support", content: "I can help.", ts: new Date().toISOString() }),
+  });
+  assert.equal(unreadIndicator.style.display, "block");
+
+  eventSource.emit("handoff", { data: JSON.stringify({ active: false, updated_at: "2026-08-02T00:00:01.000Z" }) });
+  assert.equal(harness.storage.get("openvila_handoff_session_id"), "");
   assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
 });
 

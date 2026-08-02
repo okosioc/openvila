@@ -85,13 +85,13 @@
   var apiBase = buildApiBase(widgetConfig);
   var visitorBubbleBackground = thirdOpacityColor(widgetConfig.color || "#2563eb");
   var SESSION_ID_KEY = "openvila_session_id";
+  var HANDOFF_SESSION_ID_KEY = "openvila_handoff_session_id";
   var CHAT_HISTORY_LIMIT = 200;
   var CHAT_HISTORY_REFRESH_MS = 3000;
   var renderedMessageIds = Object.create(null);
   var renderedClientMessageIds = Object.create(null);
   var streamingMessageViews = Object.create(null);
   var chatEvents = null;
-  var handoffActive = false;
   var handoffUpdatedAt = 0;
   var waitingForReply = false;
   var replyWaitStartedAt = 0;
@@ -128,6 +128,14 @@
     } catch (error) {
       // ignore storage write failure
     }
+  }
+
+  function hasSavedHandoffSession() {
+    return Boolean(readStorage(window.localStorage, HANDOFF_SESSION_ID_KEY));
+  }
+
+  function shouldListenForReplies() {
+    return panel.style.display === "block" || hasSavedHandoffSession();
   }
 
   function getOrCreateIdentity() {
@@ -388,7 +396,7 @@
     if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
     append(roleLabel(item.role), content, { role: role, ts: item.ts });
 
-    if (role === "support" && panel.style.display === "none") {
+    if (role === "support" && panel.style.display === "none" && hasSavedHandoffSession()) {
       unreadSupportIndicator.style.display = "block";
     }
 
@@ -398,8 +406,8 @@
   function startNewChatSession() {
     closeChatEvents();
     writeStorage(window.localStorage, SESSION_ID_KEY, "");
+    writeStorage(window.localStorage, HANDOFF_SESSION_ID_KEY, "");
     chatIdentity = getOrCreateIdentity();
-    handoffActive = false;
     handoffUpdatedAt = 0;
     var list = document.getElementById("openvila-messages");
     if (list) {
@@ -408,7 +416,6 @@
     renderedMessageIds = Object.create(null);
     renderedClientMessageIds = Object.create(null);
     streamingMessageViews = Object.create(null);
-    unreadSupportIndicator.style.display = "none";
     setWaitingForReply(false);
     openChatEvents();
     refreshChatHistory();
@@ -425,8 +432,12 @@
       }
       handoffUpdatedAt = nextUpdatedAt;
     }
-    handoffActive = active === true;
-    if (!handoffActive && panel.style.display === "none") {
+    if (active === true && chatIdentity) {
+      writeStorage(window.localStorage, HANDOFF_SESSION_ID_KEY, chatIdentity.sessionId);
+    } else if (active !== true && chatIdentity && readStorage(window.localStorage, HANDOFF_SESSION_ID_KEY) === chatIdentity.sessionId) {
+      writeStorage(window.localStorage, HANDOFF_SESSION_ID_KEY, "");
+    }
+    if (!hasSavedHandoffSession() && panel.style.display === "none") {
       closeChatEvents();
     }
   }
@@ -554,7 +565,7 @@
 
   function hidePanel() {
     panel.style.display = "none";
-    if (!handoffActive) {
+    if (!hasSavedHandoffSession()) {
       closeChatEvents();
     }
   }
@@ -634,6 +645,13 @@
   document.body.appendChild(panel);
   document.body.appendChild(button);
 
+  var savedHandoffSessionId = readStorage(window.localStorage, HANDOFF_SESSION_ID_KEY);
+  if (savedHandoffSessionId) {
+    chatIdentity = { sessionId: savedHandoffSessionId };
+    openChatEvents();
+    refreshChatHistory();
+  }
+
   async function refreshChatHistory() {
     try {
       var payload = await requestChatHistory(chatIdentity);
@@ -648,7 +666,7 @@
   }
 
   setInterval(function () {
-    if ((panel.style.display === "block" || handoffActive) && !isChatEventsOpen()) {
+    if (shouldListenForReplies() && !isChatEventsOpen()) {
       openChatEvents();
       refreshChatHistory();
     }
