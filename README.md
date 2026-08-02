@@ -175,7 +175,7 @@ A table (MongoDB collection) listed in the scan plan is queried on every scan, s
 
 Database scan behavior:
 - with `.openvila/scan-plan`, `/scan` uses plan mode and its listed tables
-- remote pages come from `http://` / `https://` scan-plan entries and/or the configured sitemap; `--no-remote` skips both
+- remote pages come from `http://` / `https://` scan-plan entries and/or the configured sitemap (`scan.remote_sitemap_url`, with `scan.remote_max_pages`); `--no-remote` skips both
 - without `.openvila/scan-plan`, `/scan` uses auto mode: it discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then writes the selected sources into `.openvila/scan-plan`; `--reset` forces auto mode
 - optional auto knobs: `scan.db_auto_max_tables` (default `6`), `scan.db_auto_query_limit` (default `80`), `scan.db_auto_max_candidate_tables` (default `360`)
 - database access uses Node drivers (`sqlite3` / `mysql2` / `pg` / `mongodb`), no external DB CLI requirement
@@ -280,7 +280,7 @@ For a local website on another port, load the script from `/run` directly:
 <script src="http://127.0.0.1:9394/openvila/widget.js?color=%230f766e" defer></script>
 ```
 
-By default, the Widget uses the script URL origin as its chat API destination, so `host` and `port` query parameters are unnecessary. Use `data-host`, `data-port`, or the matching query parameters only to override that destination. Set the launcher and Send button background with `data-color` or `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue. `/run` allows CORS only when the website and OpenVila service use the same hostname on different ports, including local loopback aliases such as `localhost` and `127.0.0.1`.
+By default, the Widget uses the script URL origin as its chat API destination, so `host` and `port` query parameters are unnecessary. Use `data-host`, `data-port`, or the matching query parameters only to override that destination. Set the launcher and Send button background with `data-color` or `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue. Set `data-user` to an optional visitor label rendered by your website, such as `id=42, Alice`; it is shown only in the first human-takeover notification and is not a trusted identity. `/run` allows CORS only when the website and OpenVila service use the same hostname on different ports, including local loopback aliases such as `localhost` and `127.0.0.1`.
 
 For an HTTPS website, browsers block a direct `http://<host>:9394/...` script as mixed content. `/run` serves HTTP only, so expose it through your HTTPS reverse proxy and use a same-origin script URL:
 
@@ -350,6 +350,13 @@ When a visitor asks for human support, OpenVila records a handoff and sends the 
 2. While manual support is active, later visitor messages are forwarded to the same Telegram reply thread, and owner replies are delivered to the widget in real time.
 3. Reply `/close` to the handoff thread to end manual support and allow Vila to answer the visitor again.
 
+The first Telegram notification includes the visitor's session ID, current page URL, user, IP address, country, and recent conversation. The Widget sends the optional user label from its `data-user` attribute; it is display-only and can be modified by the visitor. OpenVila reads IP and country from trusted proxy headers in this order:
+
+- IP: `X-Real-IP` → first value of `X-Forwarded-For` → `CF-Connecting-IP` → direct socket address
+- country: `X-Real-Country` → `CF-IPCountry`
+
+Do not expose the OpenVila port directly to untrusted clients: they can forge these headers. Restrict it to a trusted reverse proxy or ensure the proxy overwrites the headers before forwarding requests.
+
 Handoff state is stored under `.openvila/chats/`:
 
 - `<session-id>.json`: conversation, manual-support state, and handoff events
@@ -358,6 +365,35 @@ Handoff state is stored under `.openvila/chats/`:
 Use an owner-only Telegram chat or group: anyone who can reply to a handoff notification can answer the linked visitor. A custom Telegram endpoint must support both `sendMessage` and `getUpdates`. Feishu currently receives notifications only and does not support two-way human takeover.
 
 Human-takeover events and Telegram long-polling input logs are written to `.openvila/logs/debug-YYYY-MM-DD.log`. Logs include session and update identifiers, routing status, message lengths, and complete visitor and Telegram reply text; bot credentials are not logged.
+
+### Scheduled Tasks
+
+`/run` can run internal tasks every day at the configured local server time. Add them to `.openvila/config.yaml`:
+
+```yaml
+run:
+  port: 9394
+  schedules:
+    - task: daily-report
+      at: "01:00"
+    - task: housekeeping
+      at: "01:10"
+    - task: scan
+      at: "01:20"
+```
+
+- `daily-report`: sends the previous day's visitor questions, Vila answers, and human-support replies through the currently configured notification channel(s). It ignores welcome and handoff system messages, skips session files not updated since yesterday began, then filters messages by their exact timestamps. Long reports are split for channel delivery.
+- `housekeeping`: removes `.openvila/logs/*.log` files older than 30 days.
+- `scan`: runs the same incremental knowledge refresh as `/scan --yes`.
+
+#### Execution Model
+
+- When `/run` starts, it calculates the next local occurrence of every configured `at` time and creates one timer per schedule.
+- All due tasks enter one shared queue and run serially. If multiple tasks use the same `at` time, they run in the order listed in `schedules`.
+- If a task is still running when another task becomes due, the later task waits in that queue and starts after the earlier task completes. Its actual start time can therefore be later than its configured `at` time; tasks never run concurrently.
+- A task is scheduled again only after it finishes. If it runs across its next daily occurrence, that missed occurrence is not queued; the next future configured time is used instead.
+- Task starts, completions, and failures are written to `.openvila/logs/debug-YYYY-MM-DD.log`. A failed task does not block later tasks or its next daily run.
+- On `Ctrl+C` or `SIGTERM`, `/run` clears future timers and waits for a running scheduled task to finish before closing. A stopped or restarted process does not persist or catch up missed tasks: it simply calculates the next future `at` time from the restart time.
 
 ## Runtime Directory
 
@@ -501,11 +537,11 @@ To release, update `package.json` to the target version, commit the change, then
 - [x] Add lightweight Markdown rendering in the Widget for bold text and links.
 - [x] Let the Widget use a 33%-opacity configured color for visitor-message bubble backgrounds and show message timestamps.
 - [ ] Let the Widget use browser notifications to alert visitors when human support replies.
-- [ ] Include the current page URL, logged-in visitor identity, IP address, and country in the first human-takeover notification.
+- [x] Include a visitor label, IP address, and country in the first human-takeover notification.
 - [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
 - [x] Add Skills that call existing website APIs, such as search.
 - [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
 - [x] Support `http://` and `https://` entries in `scan-plan` by fetching those pages through the remote scan flow.
 - [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.
-- [ ] Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.
-- [ ] Let `/run` send a daily summary report of all visitor questions and Vila answers from that day.
+- [x] Let `/run` schedule a daily `/scan --yes` to refresh the knowledge base automatically.
+- [x] Let `/run` send a daily summary report of all visitor questions, Vila answers, and human-support replies from that day.

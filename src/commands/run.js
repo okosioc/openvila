@@ -3,8 +3,10 @@ import { fileURLToPath } from "node:url";
 import { startChatService } from "../core/chat-service.js";
 import { ensureWidgetPreview } from "../core/install.js";
 import { loadConfig } from "../core/runtime.js";
+import { startRunSchedules } from "../core/scheduler.js";
 import { pick } from "../i18n/messages.js";
 import { cliVersion } from "../utils/version.js";
+import { runScan } from "./scan.js";
 
 const CLI_ENTRY_PATH = fileURLToPath(new URL("../index.js", import.meta.url));
 
@@ -21,6 +23,8 @@ export async function runRun(ctx, argv, dependencies = {}) {
   const startService = dependencies.startChatService || startChatService;
   const ensurePreview = dependencies.ensureWidgetPreview || ensureWidgetPreview;
   const getCliVersion = dependencies.cliVersion || cliVersion;
+  const startSchedules = dependencies.startRunSchedules || startRunSchedules;
+  const runScheduledScan = dependencies.runScan || runScan;
   const runtimeProcess = dependencies.process || process;
   const spawnProcess = dependencies.spawn || spawn;
 
@@ -51,6 +55,16 @@ export async function runRun(ctx, argv, dependencies = {}) {
 
   await ensurePreview(ctx.cwd);
   const service = await startService(ctx.cwd, config, { port });
+  let scheduler = null;
+  try {
+    scheduler = startSchedules(ctx.cwd, config, {
+      log: ctx.log,
+      scan: () => runScheduledScan(ctx, { options: { yes: true } }),
+    });
+  } catch (error) {
+    await service.close().catch(() => undefined);
+    throw error;
+  }
   const version = await getCliVersion();
 
   ctx.log(
@@ -63,6 +77,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `预览: http://127.0.0.1:${service.port}/widget`,
         `聊天接口: POST http://127.0.0.1:${service.port}/openvila/chat`,
         `Telegram 人工接管轮询: ${service.telegram_polling ? "已启用" : "未启用"}`,
+        `定时任务: ${scheduler.schedules.length > 0 ? scheduler.schedules.map((item) => `${item.task}@${item.at}`).join(", ") : "未配置"}`,
         "按 Ctrl+C 退出",
       ].join("\n"),
       [
@@ -72,6 +87,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `Preview: http://127.0.0.1:${service.port}/widget`,
         `Chat API: POST http://127.0.0.1:${service.port}/openvila/chat`,
         `Telegram handoff polling: ${service.telegram_polling ? "enabled" : "disabled"}`,
+        `Scheduled tasks: ${scheduler.schedules.length > 0 ? scheduler.schedules.map((item) => `${item.task}@${item.at}`).join(", ") : "none"}`,
         "Press Ctrl+C to stop",
       ].join("\n"),
     ),
@@ -81,6 +97,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
     const stop = async () => {
       runtimeProcess.off("SIGINT", stop);
       runtimeProcess.off("SIGTERM", stop);
+      await scheduler.close().catch(() => undefined);
       await service.close().catch(() => undefined);
       resolve();
     };

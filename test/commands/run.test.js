@@ -163,3 +163,45 @@ test("runRun starts a detached child when fork is set", async () => {
   assert.equal(unrefCalled, true);
   assert.ok(context.logs.some((line) => line.includes("OpenVila started in background: PID 12345")));
 });
+
+test("runRun starts and stops configured schedules", async () => {
+  const context = createContext();
+  const runtimeProcess = createRuntimeProcess();
+  let scheduled = null;
+  let schedulerClosed = 0;
+  let scanCalls = 0;
+
+  const runPromise = runRun(
+    context,
+    { options: {} },
+    {
+      loadConfig: async () => ({ run: { port: 9460, schedules: [{ task: "scan", at: "01:00" }] } }),
+      ensureWidgetPreview: async () => undefined,
+      cliVersion: async () => "v1.2.3",
+      startChatService: async () => ({ port: 9460, telegram_polling: false, close: async () => undefined }),
+      startRunSchedules: (_cwd, _config, options) => {
+        scheduled = options;
+        return {
+          schedules: [{ task: "scan", at: "01:00" }],
+          close: async () => {
+            schedulerClosed += 1;
+          },
+        };
+      },
+      runScan: async (_ctx, argv) => {
+        scanCalls += 1;
+        assert.deepEqual(argv, { options: { yes: true } });
+      },
+      process: runtimeProcess,
+    },
+  );
+
+  await runtimeProcess.waitFor("SIGTERM");
+  await scheduled.scan();
+  await runtimeProcess.emit("SIGTERM");
+  await runPromise;
+
+  assert.equal(scanCalls, 1);
+  assert.equal(schedulerClosed, 1);
+  assert.ok(context.logs.some((line) => line.includes("Scheduled tasks: scan@01:00")));
+});

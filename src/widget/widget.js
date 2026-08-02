@@ -8,6 +8,7 @@
     var host = "";
     var port = "";
     var color = "";
+    var user = "";
     var scriptUrl = null;
 
     var script = document.currentScript;
@@ -20,6 +21,7 @@
       host = String(script.getAttribute("data-host") || "").trim();
       port = String(script.getAttribute("data-port") || "").trim();
       color = String(script.getAttribute("data-color") || "").trim();
+      user = String(script.getAttribute("data-user") || "").trim();
 
       var src = String(script.getAttribute("src") || "").trim();
       if (src) {
@@ -49,7 +51,7 @@
       port = "9394";
     }
 
-    return { host: host, port: port, color: color };
+    return { host: host, port: port, color: color, user: user };
   }
 
   function buildApiBase(config) {
@@ -515,7 +517,9 @@
         message: message,
         session_id: identity.sessionId,
         client_message_id: clientMessageId,
-        locale: VISITOR_LOCALE
+        locale: VISITOR_LOCALE,
+        page_url: String(window.location.href || ""),
+        user: widgetConfig.user
       })
     });
 
@@ -533,7 +537,9 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         session_id: identity.sessionId,
-        locale: VISITOR_LOCALE
+        locale: VISITOR_LOCALE,
+        page_url: String(window.location.href || ""),
+        user: widgetConfig.user
       })
     });
 

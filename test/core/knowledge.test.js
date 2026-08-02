@@ -603,7 +603,7 @@ test("prepareKnowledgeScanPlan disables sitemap and scan-plan remote pages when 
         model: "test-model",
       },
       scan: {
-        sitemap_url: "https://example.com/sitemap.xml",
+        remote_sitemap_url: "https://example.com/sitemap.xml",
       },
     },
     scanPlan: { remote_urls: ["https://example.com/faq"] },
@@ -613,6 +613,65 @@ test("prepareKnowledgeScanPlan disables sitemap and scan-plan remote pages when 
   assert.equal(plan.remote.enabled, false);
   assert.equal(plan.remote.sitemap_url, "");
   assert.deepEqual(plan.remote.urls, []);
+});
+
+test("prepareKnowledgeScanPlan ignores legacy remote configuration", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+  await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+
+  const plan = await prepareKnowledgeScanPlan(cwd, {
+    config: {
+      llm: {
+        endpoint: llm.endpoint,
+        api_key: "test-key",
+        model: "test-model",
+      },
+      scan: {
+        sitemap_url: "https://example.com/legacy-sitemap.xml",
+        remote: {
+          sitemap_url: "https://example.com/sitemap.xml",
+          max_pages: 3,
+        },
+      },
+    },
+  });
+
+  assert.equal(plan.remote.enabled, false);
+  assert.equal(plan.remote.sitemap_url, "");
+  assert.equal(plan.remote.max_pages, 20);
+});
+
+test("prepareKnowledgeScanPlan uses flat remote configuration", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+  await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+
+  const plan = await prepareKnowledgeScanPlan(cwd, {
+    config: {
+      llm: {
+        endpoint: llm.endpoint,
+        api_key: "test-key",
+        model: "test-model",
+      },
+      scan: {
+        remote_sitemap_url: "https://example.com/sitemap.xml",
+        remote_max_pages: 3,
+      },
+    },
+  });
+
+  assert.equal(plan.remote.enabled, true);
+  assert.equal(plan.remote.sitemap_url, "https://example.com/sitemap.xml");
+  assert.equal(plan.remote.max_pages, 3);
 });
 
 test("prepareKnowledgeScanPlan ignores legacy database query configuration", async (context) => {

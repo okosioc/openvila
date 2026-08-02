@@ -209,6 +209,23 @@ function readRequestMeta(req) {
   };
 }
 
+function readRequestHeader(req, name) {
+  const value = req?.headers?.[name];
+  return Array.isArray(value) ? String(value[0] || "").trim() : String(value || "").trim();
+}
+
+function readHandoffVisitorContext(req) {
+  const forwardedFor = readRequestHeader(req, "x-forwarded-for").split(",")[0].trim();
+  return {
+    ip:
+      readRequestHeader(req, "x-real-ip") ||
+      forwardedFor ||
+      readRequestHeader(req, "cf-connecting-ip") ||
+      String(req?.socket?.remoteAddress || "").trim(),
+    country: readRequestHeader(req, "x-real-country") || readRequestHeader(req, "cf-ipcountry"),
+  };
+}
+
 function writeChatSessionLog(eventName, req, identity, extra = {}) {
   const safeIdentity = identity && typeof identity === "object" ? identity : {};
   const meta = readRequestMeta(req);
@@ -244,6 +261,23 @@ function resolveChatIdentity(input) {
   return {
     session_id: RESERVED_CHAT_SESSION_IDS.has(sessionId) ? "" : sessionId,
   };
+}
+
+function normalizePageUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 2048) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeVisitorUser(value) {
+  return String(value || "").trim().slice(0, 260);
 }
 
 function normalizeChatRole(role) {
@@ -793,7 +827,7 @@ function renderHandoffTranscript(messages) {
     .join("\n");
 }
 
-async function notifyTelegramHandoff(cwd, config, paths, sessionId) {
+async function notifyTelegramHandoff(cwd, config, paths, sessionId, pageUrl, visitor) {
   if (!hasTelegramChannel(config)) {
     return null;
   }
@@ -812,6 +846,10 @@ async function notifyTelegramHandoff(cwd, config, paths, sessionId) {
   const message = [
     "OpenVila human support requested",
     `Session: ${sessionId}`,
+    `Page: ${sanitizeLogField(pageUrl)}`,
+    `User: ${sanitizeLogField(visitor?.user)}`,
+    `IP: ${sanitizeLogField(visitor?.ip)}`,
+    `Country: ${sanitizeLogField(visitor?.country)}`,
     "Reply to this message to answer the visitor. Reply /close to end manual support.",
     "",
     "Recent conversation:",
@@ -884,11 +922,12 @@ async function replyDuringHumanSupport(cwd, config, paths, identity, message, re
   return answer;
 }
 
-async function requestHumanSupport(cwd, config, paths, identity, message, req, route) {
+async function requestHumanSupport(cwd, config, paths, identity, message, req, route, pageUrl, visitorUser) {
   writeGlobalLog(
     `[chat] human support requested\nsession_id: ${sanitizeLogField(identity.session_id)}\nmessage_length: ${message.length}\nvisitor_message:\n${fullLogText(message)}\nroute: ${sanitizeLogField(route)}`,
   );
-  const handoff = await notifyTelegramHandoff(cwd, config, paths, identity.session_id);
+  const visitor = { ...readHandoffVisitorContext(req), user: visitorUser };
+  const handoff = await notifyTelegramHandoff(cwd, config, paths, identity.session_id, pageUrl, visitor);
   const session = await readChatSession(paths, identity.session_id);
   const systemMessage = session?.messages.at(-1);
   const answer = chatHandoffText(session?.locale, handoff ? "request_sent" : "unavailable");
@@ -1287,7 +1326,7 @@ export async function startChatService(cwd, config, options = {}) {
     return appendAssistantReply(identity, content, { req, route, mode: "welcome", locale: visitorLocale, onlyIfNew: true });
   }
 
-  async function processSubmittedMessage(identity, userMessage, req, route) {
+  async function processSubmittedMessage(identity, userMessage, req, route, pageUrl, visitorUser) {
     const message = userMessage.content;
     const manualSupportAnswer = await replyDuringHumanSupport(cwd, config, paths, identity, message, req, route);
     if (manualSupportAnswer) {
@@ -1296,7 +1335,7 @@ export async function startChatService(cwd, config, options = {}) {
     }
 
     if (isHumanSupportRequest(message)) {
-      const support = await requestHumanSupport(cwd, config, paths, identity, message, req, route);
+      const support = await requestHumanSupport(cwd, config, paths, identity, message, req, route, pageUrl, visitorUser);
       publishHandoffState(identity.session_id, support.handoff);
       if (support.system_message) {
         publishChatEvent(identity.session_id, "message", support.system_message);
@@ -1350,7 +1389,7 @@ export async function startChatService(cwd, config, options = {}) {
     });
   }
 
-  async function requestHumanSupportCommand(identity, req, route, visitorLocale) {
+  async function requestHumanSupportCommand(identity, req, route, visitorLocale, pageUrl, visitorUser) {
     return enqueueSessionProcess(identity.session_id, async () => {
       await ensureChatWelcome(identity, req, route, visitorLocale);
       const existing = await readTelegramHandoff(paths, identity.session_id);
@@ -1367,6 +1406,8 @@ export async function startChatService(cwd, config, options = {}) {
         "Visitor requested human support via /human.",
         req,
         route,
+        pageUrl,
+        visitorUser,
       );
       publishHandoffState(identity.session_id, support.handoff);
       if (support.system_message) {
@@ -1377,7 +1418,7 @@ export async function startChatService(cwd, config, options = {}) {
     });
   }
 
-  function queueSubmittedMessage(identity, message, clientMessageId, req, route, visitorLocale) {
+  function queueSubmittedMessage(identity, message, clientMessageId, req, route, visitorLocale, pageUrl, visitorUser) {
     const task = enqueueSessionProcess(identity.session_id, async () => {
       await ensureChatWelcome(identity, req, route, visitorLocale);
       const submitted = await submitUserMessage(paths, identity, message, clientMessageId, {
@@ -1392,7 +1433,7 @@ export async function startChatService(cwd, config, options = {}) {
 
       publishChatEvent(identity.session_id, "message", submitted.message);
       try {
-        await processSubmittedMessage(identity, submitted.message, req, route);
+        await processSubmittedMessage(identity, submitted.message, req, route, pageUrl, visitorUser);
       } catch (error) {
         writeGlobalLog(
           `[chat] message processing failed\nsession_id: ${sanitizeLogField(identity.session_id)}\nerror: ${sanitizeLogField(error.message)}`,
@@ -1520,12 +1561,14 @@ export async function startChatService(cwd, config, options = {}) {
         const body = await parseBody(req);
         const visitorLocale = String(body.locale || "").trim();
         const identity = resolveChatIdentity(body);
+        const pageUrl = normalizePageUrl(body.page_url);
+        const visitorUser = normalizeVisitorUser(body.user);
         if (!identity.session_id) {
           sendJson(res, 400, { error: "session_id is required" });
           return;
         }
 
-        const result = await requestHumanSupportCommand(identity, req, `${CHAT_API_PATH}/human`, visitorLocale);
+        const result = await requestHumanSupportCommand(identity, req, `${CHAT_API_PATH}/human`, visitorLocale, pageUrl, visitorUser);
         sendJson(res, 200, { ok: true, ...result });
         return;
       }
@@ -1535,6 +1578,8 @@ export async function startChatService(cwd, config, options = {}) {
         const message = String(body.message || "").trim();
         const visitorLocale = String(body.locale || "").trim();
         const identity = resolveChatIdentity(body);
+        const pageUrl = normalizePageUrl(body.page_url);
+        const visitorUser = normalizeVisitorUser(body.user);
 
         if (!message || !identity.session_id) {
           sendJson(res, 400, { error: !message ? "message is required" : "session_id is required" });
@@ -1542,7 +1587,7 @@ export async function startChatService(cwd, config, options = {}) {
         }
 
         const clientMessageId = normalizeClientMessageId(body.client_message_id) || crypto.randomUUID();
-        queueSubmittedMessage(identity, message, clientMessageId, req, CHAT_API_PATH, visitorLocale);
+        queueSubmittedMessage(identity, message, clientMessageId, req, CHAT_API_PATH, visitorLocale, pageUrl, visitorUser);
         sendJson(res, 202, {
           ok: true,
           accepted: true,

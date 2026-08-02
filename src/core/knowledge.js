@@ -289,11 +289,11 @@ function inferLocale(config) {
 }
 
 function remotePlanFromConfig(config, plannedUrls = [], skipRemote = false) {
-  const sitemapUrl = skipRemote ? "" : String(config?.scan?.sitemap_url || config?.scan?.remote?.sitemap_url || "").trim();
+  const sitemapUrl = skipRemote ? "" : String(config?.scan?.remote_sitemap_url || "").trim();
   const urls = skipRemote
     ? []
     : unique((plannedUrls || []).map((url) => String(url || "").trim()).filter((url) => /^https?:\/\//i.test(url)));
-  const maxPagesRaw = Number(config?.scan?.remote_max_pages || config?.scan?.remote?.max_pages || 20) || 20;
+  const maxPagesRaw = Number(config?.scan?.remote_max_pages || 20) || 20;
   const maxPages = Math.max(1, Math.min(maxPagesRaw, 80));
   return {
     sitemap_url: sitemapUrl,

@@ -83,6 +83,7 @@ export function defaultConfig() {
     },
     run: {
       port: 9394,
+      schedules: [],
     },
   };
 }

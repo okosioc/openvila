@@ -643,7 +643,16 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
         client_message_id: "handoff-request",
         message: "Please connect me to a human operator",
         locale: "zh-CN",
+        page_url: "https://example.com/pricing?plan=vip",
+        user: "id=42, Alice",
       }),
+      headers: {
+        "X-Real-IP": "203.0.113.10",
+        "X-Forwarded-For": "198.51.100.7, 10.0.0.2",
+        "CF-Connecting-IP": "192.0.2.8",
+        "X-Real-Country": "CN",
+        "CF-IPCountry": "US",
+      },
     });
     assert.equal(initialResponse.status, 202);
 
@@ -654,6 +663,10 @@ test("Telegram handoff routes owner replies, visitor follow-ups, and close event
     const handoffMessage = telegram.messages[0];
 
     assert.match(handoffMessage.text, /Session: visitor-2/);
+    assert.match(handoffMessage.text, /Page: https:\/\/example\.com\/pricing\?plan=vip/);
+    assert.match(handoffMessage.text, /User: id=42, Alice/);
+    assert.match(handoffMessage.text, /IP: 203\.0\.113\.10/);
+    assert.match(handoffMessage.text, /Country: CN/);
     assert.match(handoffMessage.text, /Recent conversation:/);
     assert.equal(waitingSession.locale, "zh");
     assert.equal(waitingSession.handoff.telegram_message_ids[0], handoffMessage.message_id);
@@ -759,13 +772,21 @@ test("chat commands request human support and reset an active handoff", async ()
     await telegram.waitForPoll();
     const human = await requestJson(chat.baseUrl, "/openvila/chat/human", {
       method: "POST",
-      body: JSON.stringify({ session_id: "visitor-command", locale: "en-US" }),
+      body: JSON.stringify({ session_id: "visitor-command", locale: "en-US", user: "id=73, Bob" }),
+      headers: {
+        "X-Forwarded-For": "198.51.100.7, 10.0.0.2",
+        "CF-Connecting-IP": "192.0.2.8",
+        "CF-IPCountry": "US",
+      },
     });
 
     assert.equal(human.status, 200);
     assert.equal(human.body.already_requested, false);
     const handoffMessage = telegram.messages[0];
     assert.ok(handoffMessage);
+    assert.match(handoffMessage.text, /User: id=73, Bob/);
+    assert.match(handoffMessage.text, /IP: 198\.51\.100\.7/);
+    assert.match(handoffMessage.text, /Country: US/);
     const waitingSession = await waitFor(async () => {
       const session = await readSession(chat.cwd, "visitor-command");
       return session?.handoff?.status === "waiting_owner" ? session : null;

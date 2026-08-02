@@ -342,7 +342,7 @@ test("widget close button hides the panel and closes the event stream", async ()
 });
 
 test("widget sends reset and human commands without adding them to the conversation", async () => {
-  const harness = await loadWidget();
+  const harness = await loadWidget({ scriptAttributes: { "data-user": "id=42, Alice" } });
   const form = harness.document.getElementById("openvila-form");
   const input = harness.document.getElementById("openvila-input");
   const panel = harness.document.getElementById("openvila-panel");
@@ -354,6 +354,8 @@ test("widget sends reset and human commands without adding them to the conversat
   const humanCall = harness.fetchCalls.find((call) => String(call.url).endsWith("/openvila/chat/human"));
   assert.ok(humanCall);
   assert.equal(JSON.parse(humanCall.request.body).message, undefined);
+  assert.equal(JSON.parse(humanCall.request.body).page_url, "http://127.0.0.1/");
+  assert.equal(JSON.parse(humanCall.request.body).user, "id=42, Alice");
   assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/openvila/chat")).length, 0);
 
   eventSource.emit("message", {
@@ -403,7 +405,7 @@ test("widget keeps listening during human support and marks a hidden reply unrea
 });
 
 test("widget renders streamed replies once and unlocks after the completed message", async () => {
-  const harness = await loadWidget();
+  const harness = await loadWidget({ scriptAttributes: { "data-user": "id=42, Alice" } });
   const form = harness.document.getElementById("openvila-form");
   const input = harness.document.getElementById("openvila-input");
   const submit = harness.document.getElementById("openvila-submit");
@@ -416,6 +418,9 @@ test("widget renders streamed replies once and unlocks after the completed messa
   assert.equal(submit.disabled, true);
   assert.equal(submit.textContent, "Waiting...");
   assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/openvila/chat")).length, 1);
+  const messageCall = harness.fetchCalls.find((call) => String(call.url).endsWith("/openvila/chat"));
+  assert.equal(JSON.parse(messageCall.request.body).page_url, "http://127.0.0.1/");
+  assert.equal(JSON.parse(messageCall.request.body).user, "id=42, Alice");
 
   eventSource.emit("delta", {
     data: JSON.stringify({
