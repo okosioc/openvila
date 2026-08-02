@@ -286,7 +286,7 @@ async function readSession(cwd, sessionId) {
   try {
     return JSON.parse(await fs.readFile(sessionPath, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) {
       return null;
     }
     throw error;
