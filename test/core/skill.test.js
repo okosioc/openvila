@@ -88,6 +88,7 @@ test("compileSkillMarkdown converts a natural-language skill into a validated ru
 
   assert.equal(skill.name, "search");
   assert.equal(skill.enabled, true);
+  assert.equal(skill.source_path, ".openvila/skills/search.md");
   assert.deepEqual(skill.process.query, { q: "{{query}}" });
   assert.match(llm.requests[0].messages[0].content, /output_instruction preserves the returned fields and visitor-facing transformation/);
   assert.match(llm.requests[0].messages[1].content, /visitor searches for a model by name or alias/);
@@ -108,7 +109,7 @@ test("readSkill adapts legacy fields to the four-section definition", async (con
       inputs: [{ name: "query", description: "Requested name", required: true }],
       request: { method: "GET", url: "http://127.0.0.1:5001/api/search", query: { q: "{{query}}" }, body: {} },
       result_instruction: "Return matches as Markdown links.",
-      source_path: "skills/search.md",
+      source_path: ".openvila/skills/search.md",
       updated_at: "2026-07-31T00:00:00.000Z",
     }, null, 2)}\n`,
     "utf8",

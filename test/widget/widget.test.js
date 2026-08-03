@@ -402,7 +402,7 @@ test("widget keeps listening during human support and marks a hidden reply unrea
   assert.equal(eventSource.readyState, harness.context.window.EventSource.OPEN);
 
   eventSource.emit("message", {
-    data: JSON.stringify({ id: "support-reply", role: "support", content: "I can help.", ts: new Date().toISOString() }),
+    data: JSON.stringify({ id: "support-reply", role: "support", content: "I can help.", ts: new Date(Date.now() + 1000).toISOString() }),
   });
   assert.equal(unreadIndicator.style.display, "block");
 
@@ -439,6 +439,26 @@ test("widget restores a hidden human-support listener on a later page", async ()
   eventSource.emit("handoff", { data: JSON.stringify({ active: false, updated_at: "2026-08-02T00:00:01.000Z" }) });
   assert.equal(harness.storage.get("openvila_handoff_session_id"), "");
   assert.equal(eventSource.readyState, harness.context.window.EventSource.CLOSED);
+});
+
+test("widget does not mark viewed support replies unread on a later page", async () => {
+  const sessionId = "session-viewed-handoff";
+  const harness = await loadWidget({
+    open: false,
+    storage: {
+      openvila_session_id: sessionId,
+      openvila_handoff_session_id: sessionId,
+      openvila_handoff_read_at: "2026-08-02T00:00:02.000Z",
+    },
+    historyPayload: {
+      messages: [{ id: "viewed-support-reply", role: "support", content: "Already viewed.", ts: "2026-08-02T00:00:01.000Z" }],
+      handoff: { active: true, updated_at: "2026-08-02T00:00:02.000Z" },
+    },
+  });
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const unreadIndicator = launcher.children.at(-1);
+
+  assert.equal(unreadIndicator.style.display, "none");
 });
 
 test("widget renders streamed replies once and unlocks after the completed message", async () => {

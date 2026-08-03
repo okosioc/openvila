@@ -1077,7 +1077,7 @@ async function selectDocs(cwd, config, index, question, chatHistory = []) {
         "Rules:",
         "(1) If this is small talk (for example greeting/thanks/goodbye), set can_answer_directly=true and provide a short, polite direct_answer in the user's language, with doc_paths=[].",
         "(2) If an enabled skill directly fulfills the visitor's task, set can_answer_directly=false, keep direct_answer empty and doc_paths=[], and choose up to 2 skill_calls. Use its exact name and only its listed input names.",
-        "(3) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[].",
+        "(3) If the user's question can be answered confidently and completely using Frequent Customer Concerns context, set can_answer_directly=true, provide direct_answer in the user's language, and doc_paths=[]. When that context contains a relevant Markdown link, use its exact URL in a Markdown link with text that fits direct_answer. Never output a provided URL as bare text, and never invent URLs.",
         "(4) Otherwise set can_answer_directly=false, keep direct_answer empty, and choose the 1 or 2 documents from Document index that best answer the visitor's question using Recent chat history. Set their paths in doc_paths.",
         "(5) If Frequent Customer Concerns, document index, and enabled skills are all empty and this is not small talk, set can_answer_directly=false with doc_paths=[] and skill_calls=[].",
       ].join("\n"),

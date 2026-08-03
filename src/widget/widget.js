@@ -86,6 +86,7 @@
   var visitorBubbleBackground = thirdOpacityColor(widgetConfig.color || "#2563eb");
   var SESSION_ID_KEY = "openvila_session_id";
   var HANDOFF_SESSION_ID_KEY = "openvila_handoff_session_id";
+  var HANDOFF_READ_AT_KEY = "openvila_handoff_read_at";
   var CHAT_HISTORY_LIMIT = 200;
   var CHAT_HISTORY_REFRESH_MS = 3000;
   var renderedMessageIds = Object.create(null);
@@ -136,6 +137,17 @@
 
   function shouldListenForReplies() {
     return panel.style.display === "block" || hasSavedHandoffSession();
+  }
+
+  function markSupportRepliesRead(timestamp) {
+    writeStorage(window.localStorage, HANDOFF_READ_AT_KEY, timestamp || new Date().toISOString());
+    unreadSupportIndicator.style.display = "none";
+  }
+
+  function isUnreadSupportReply(item) {
+    var replyTime = Date.parse(String((item && item.ts) || ""));
+    var readTime = Date.parse(readStorage(window.localStorage, HANDOFF_READ_AT_KEY));
+    return !Number.isFinite(replyTime) || !Number.isFinite(readTime) || replyTime > readTime;
   }
 
   function getOrCreateIdentity() {
@@ -396,8 +408,12 @@
     if (clientMessageId) renderedClientMessageIds[clientMessageId] = true;
     append(roleLabel(item.role), content, { role: role, ts: item.ts });
 
-    if (role === "support" && panel.style.display === "none" && hasSavedHandoffSession()) {
-      unreadSupportIndicator.style.display = "block";
+    if (role === "support") {
+      if (panel.style.display === "none" && hasSavedHandoffSession() && isUnreadSupportReply(item)) {
+        unreadSupportIndicator.style.display = "block";
+      } else if (panel.style.display === "block") {
+        markSupportRepliesRead(item.ts);
+      }
     }
 
     completeReplyWait(item, role);
@@ -407,6 +423,7 @@
     closeChatEvents();
     writeStorage(window.localStorage, SESSION_ID_KEY, "");
     writeStorage(window.localStorage, HANDOFF_SESSION_ID_KEY, "");
+    writeStorage(window.localStorage, HANDOFF_READ_AT_KEY, "");
     chatIdentity = getOrCreateIdentity();
     handoffUpdatedAt = 0;
     var list = document.getElementById("openvila-messages");
@@ -576,7 +593,7 @@
     panel.style.display = panel.style.display === "none" ? "block" : "none";
     if (panel.style.display === "block") {
       chatIdentity = chatIdentity || getOrCreateIdentity();
-      unreadSupportIndicator.style.display = "none";
+      markSupportRepliesRead();
       scrollMessagesToBottom();
       openChatEvents();
       refreshChatHistory();

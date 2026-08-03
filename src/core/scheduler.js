@@ -166,15 +166,18 @@ async function readDailyChatRecords(cwd, start, end, dependencies = {}) {
       skipped += 1;
       continue;
     }
-    const messages = Array.isArray(session?.messages)
-      ? session.messages.filter((message) => {
+    const sessionMessages = Array.isArray(session?.messages) ? session.messages : [];
+    if (sessionMessages.length === 1 && sessionMessages[0]?.role === "assistant") {
+      continue;
+    }
+    const messages = sessionMessages
+      .filter((message) => {
           if (!DAILY_REPORT_ROLES.has(message?.role)) {
             return false;
           }
           const timestamp = new Date(message.ts).getTime();
           return Number.isFinite(timestamp) && timestamp >= start.getTime() && timestamp < end.getTime();
-        })
-      : [];
+        });
     if (messages.length === 0) {
       continue;
     }

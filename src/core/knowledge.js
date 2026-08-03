@@ -442,12 +442,44 @@ async function loadPreviousKnowledgeState(paths) {
   };
 }
 
-async function cleanKnowledgeFolder(paths, options = {}) {
-  const reset = Boolean(options.reset);
-  if (reset) {
-    await fs.rm(paths.knowledgeDocs, { recursive: true, force: true });
+function createScanId() {
+  return `scan-${crypto.randomBytes(3).toString("hex").slice(0, 5)}`;
+}
+
+function temporaryPathFor(filePath, scanId) {
+  return path.join(path.dirname(filePath), `.${path.basename(filePath)}.${scanId}.tmp`);
+}
+
+async function cleanTemporaryKnowledgeFiles(paths) {
+  for (const directory of [paths.knowledges, paths.knowledgeDocs]) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.scan-[a-f0-9]{5}\.tmp$/i.test(entry.name)) {
+        continue;
+      }
+      await fs.rm(path.join(directory, entry.name), { force: true });
+    }
   }
-  await fs.rm(path.join(paths.knowledges, "links.json"), { force: true });
+}
+
+async function writeTextAtomically(filePath, content, scanId) {
+  const temporaryPath = temporaryPathFor(filePath, scanId);
+  try {
+    await writeText(temporaryPath, content);
+    await fs.rename(temporaryPath, filePath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
+async function ensureKnowledgeFolder(paths) {
   await fs.mkdir(paths.knowledgeDocs, { recursive: true });
 }
 
@@ -863,9 +895,7 @@ async function renderIndexMarkdown({ locale, generatedAt, scanMode, indexMap, pa
 }
 
 async function writeCompiledDocs(paths, compiledBySource, options = {}) {
-  const reset = Boolean(options.reset);
-  const previousDocMap = options.previousDocMap || {};
-  const deletedSources = (options.deletedSources || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const scanId = options.scanId;
 
   for (const [source, item] of compiledBySource.entries()) {
     const docPath = normalizeStoredPath(item.doc_path, "docs");
@@ -874,19 +904,25 @@ async function writeCompiledDocs(paths, compiledBySource, options = {}) {
     }
     const fullPath = storedPathToAbsolute(paths.knowledges, docPath);
     await fs.mkdir(path.dirname(fullPath), { recursive: true });
-    await writeText(fullPath, item.markdown || "");
-
-    const previousDocPath = normalizeStoredPath(previousDocMap[source], "docs");
-    if (!reset && previousDocPath && previousDocPath !== docPath) {
-      await fs.rm(storedPathToAbsolute(paths.knowledges, previousDocPath), { force: true });
-    }
+    await writeTextAtomically(fullPath, item.markdown || "", scanId);
   }
+}
 
-  if (!reset) {
-    for (const source of deletedSources) {
-      const previousDocPath = normalizeStoredPath(previousDocMap[source], "docs");
-      if (!previousDocPath) continue;
-      await fs.rm(storedPathToAbsolute(paths.knowledges, previousDocPath), { force: true });
+async function removeObsoleteCompiledDocs(paths, sourceDocMap) {
+  const currentDocPaths = new Set(
+    Object.values(sourceDocMap)
+      .map((docPath) => normalizeStoredPath(docPath, "docs"))
+      .filter(Boolean)
+      .map((docPath) => storedPathToAbsolute(paths.knowledges, docPath)),
+  );
+  const entries = await fs.readdir(paths.knowledgeDocs, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) {
+      continue;
+    }
+    const filePath = path.join(paths.knowledgeDocs, entry.name);
+    if (!currentDocPaths.has(filePath)) {
+      await fs.rm(filePath, { force: true });
     }
   }
 }
@@ -917,17 +953,12 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   const log = typeof options.log === "function" ? options.log : () => undefined;
   const reset = Boolean(options.reset);
   const compileSettings = compileConfig(config);
+  const scanId = createScanId();
 
-  const previous = reset
-    ? {
-        manifest: {},
-        sourceHashes: {},
-        sourceDocMap: {},
-        indexMap: {},
-      }
-    : await loadPreviousKnowledgeState(paths);
+  const previous = await loadPreviousKnowledgeState(paths);
 
-  await cleanKnowledgeFolder(paths, { reset });
+  await cleanTemporaryKnowledgeFiles(paths);
+  await ensureKnowledgeFolder(paths);
 
   const docs = [];
   const warnings = [];
@@ -1112,9 +1143,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       }]),
     ),
     {
-      reset,
-      previousDocMap: previousSourceDocMap,
-      deletedSources,
+      scanId,
     },
   );
 
@@ -1176,9 +1205,9 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     warnings,
   };
 
-  await writeText(paths.knowledgeIndex, indexMarkdown.endsWith("\n") ? indexMarkdown : `${indexMarkdown}\n`);
-
-  await writeText(paths.knowledgeManifest, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeTextAtomically(paths.knowledgeIndex, indexMarkdown.endsWith("\n") ? indexMarkdown : `${indexMarkdown}\n`, scanId);
+  await writeTextAtomically(paths.knowledgeManifest, `${JSON.stringify(manifest, null, 2)}\n`, scanId);
+  await removeObsoleteCompiledDocs(paths, currentSourceDocMap);
 
   return {
     framework: plan.framework,

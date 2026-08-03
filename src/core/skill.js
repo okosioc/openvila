@@ -163,7 +163,7 @@ function trimResponseText(value) {
 }
 
 export function skillSourcePath(cwd, name) {
-  return path.join(runtimePaths(cwd).skillSources, `${normalizeSkillName(name)}.md`);
+  return path.join(runtimePaths(cwd).skills, `${normalizeSkillName(name)}.md`);
 }
 
 export function skillRuntimePath(cwd, name) {
@@ -219,7 +219,7 @@ export async function compileSkillMarkdown(config, name, source) {
 
   return normalizeSkillDefinition(skillName, extractJsonObject(completion.content), {
     enabled: true,
-    sourcePath: `skills/${skillName}.md`,
+    sourcePath: `.openvila/skills/${skillName}.md`,
   });
 }
 

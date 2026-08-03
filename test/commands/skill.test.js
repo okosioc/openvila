@@ -19,7 +19,7 @@ function compiledSkill() {
       body: {},
     },
     output_instruction: "Return matching items as Markdown links.",
-    source_path: "skills/search.md",
+    source_path: ".openvila/skills/search.md",
     updated_at: "2026-07-29T00:00:00.000Z",
   };
 }
@@ -54,7 +54,7 @@ test("runSkill manages a compiled natural-language skill", async (context) => {
   const paths = runtimePaths(cwd);
   const stored = JSON.parse(await fs.readFile(path.join(paths.skills, "search.json"), "utf8"));
   assert.equal(stored.enabled, true);
-  assert.match(await fs.readFile(path.join(cwd, "skills", "search.md"), "utf8"), /Use for item searches/);
+  assert.match(await fs.readFile(path.join(paths.skills, "search.md"), "utf8"), /Use for item searches/);
   assert.ok(logs.some((line) => line.includes("Runtime definition to confirm")));
 
   await runSkill(ctx, { positionals: ["disable", "search"], options: {} });
@@ -68,5 +68,5 @@ test("runSkill manages a compiled natural-language skill", async (context) => {
 
   await runSkill(ctx, { positionals: ["delete", "search"], options: { yes: true } });
   await assert.rejects(fs.access(path.join(paths.skills, "search.json")), { code: "ENOENT" });
-  await assert.rejects(fs.access(path.join(cwd, "skills", "search.md")), { code: "ENOENT" });
+  await assert.rejects(fs.access(path.join(paths.skills, "search.md")), { code: "ENOENT" });
 });

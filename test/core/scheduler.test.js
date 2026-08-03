@@ -36,6 +36,15 @@ test("sendDailyReport includes visitor, Vila, and human messages from yesterday"
     "utf8",
   );
   await fs.utimes(sessionPath, now, now);
+  await fs.writeFile(
+    path.join(paths.chats, "session-welcome-only.json"),
+    `${JSON.stringify({
+      session_id: "session-welcome-only",
+      messages: [{ role: "assistant", content: "Hello, I'm Vila.", ts: yesterday.toISOString() }],
+    }, null, 2)}\n`,
+    "utf8",
+  );
+  await fs.utimes(path.join(paths.chats, "session-welcome-only.json"), now, now);
 
   const sent = [];
   const result = await sendDailyReport(cwd, { language: "en" }, {
@@ -54,6 +63,7 @@ test("sendDailyReport includes visitor, Vila, and human messages from yesterday"
   assert.match(sent[0], /Vila: Vila answer/);
   assert.match(sent[0], /Human support: Human answer/);
   assert.doesNotMatch(sent[0], /Welcome|Handoff|Today question/);
+  assert.doesNotMatch(sent[0], /Hello, I'm Vila|session-welcome-only/);
 });
 
 test("pruneRuntimeLogs removes log files older than 30 days", async () => {

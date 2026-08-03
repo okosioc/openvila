@@ -56,6 +56,11 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
         previewCalls.push(cwd);
       },
       cliVersion: async () => "v1.2.3",
+      loadKnowledgeIndex: async () => ({ source_stats: { filesystem: 4, database: 0, remote: 2 } }),
+      listSkills: async (_cwd, options) => {
+        assert.deepEqual(options, { enabledOnly: true });
+        return [{ name: "search" }, { name: "order-status" }];
+      },
       startChatService: async (cwd, config, options) => {
         startCalls.push({ cwd, config, options });
         return {
@@ -87,6 +92,8 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
   assert.ok(context.logs.some((line) => line.includes("Preview: http://127.0.0.1:9460/widget")));
   assert.ok(context.logs.some((line) => line.includes("http://127.0.0.1:9460")));
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: disabled")));
+  assert.ok(context.logs.some((line) => line.includes("Knowledge documents: files=4, database=0, remote=2")));
+  assert.ok(context.logs.some((line) => line.includes("Enabled skills: search, order-status")));
 });
 
 test("runRun lets the command port override the runtime configuration", async () => {
@@ -104,6 +111,8 @@ test("runRun lets the command port override the runtime configuration", async ()
         previewCwd = cwd;
       },
       cliVersion: async () => "v1.2.3",
+      loadKnowledgeIndex: async () => ({ index_map: {} }),
+      listSkills: async () => [],
       startChatService: async (cwd, config, options) => {
         selectedPort = options.port;
         return {
@@ -178,6 +187,8 @@ test("runRun starts and stops configured schedules", async () => {
       loadConfig: async () => ({ run: { port: 9460, schedules: [{ task: "scan", at: "01:00" }] } }),
       ensureWidgetPreview: async () => undefined,
       cliVersion: async () => "v1.2.3",
+      loadKnowledgeIndex: async () => ({ index_map: {} }),
+      listSkills: async () => [],
       startChatService: async () => ({ port: 9460, telegram_polling: false, close: async () => undefined }),
       startRunSchedules: (_cwd, _config, options) => {
         scheduled = options;

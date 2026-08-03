@@ -281,7 +281,7 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
     fs.writeFile(path.join(cwd, "faq.html"), content),
     fs.writeFile(path.join(cwd, ".openvila", "config.yaml"), "language: en\n"),
     fs.writeFile(path.join(knowledges, "docs", "fs-faq-html.md"), "# FAQ\n"),
-    fs.writeFile(path.join(knowledges, "links.json"), "{}\n"),
+    fs.writeFile(path.join(knowledges, "docs", ".fs-faq-html.md.scan-a4f9e.tmp"), "interrupted scan\n"),
     fs.writeFile(
       path.join(knowledges, "manifest.json"),
       `${JSON.stringify({
@@ -320,7 +320,106 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
     total: 0,
     doc_compile_batch_chars: 50000,
   });
-  await assert.rejects(fs.access(path.join(knowledges, "links.json")), { code: "ENOENT" });
+  await assert.rejects(fs.access(path.join(knowledges, "docs", ".fs-faq-html.md.scan-a4f9e.tmp")), { code: "ENOENT" });
+});
+
+test("buildKnowledgeBase recompiles unchanged sources when reset is set", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+  const config = {
+    llm: {
+      endpoint: llm.endpoint,
+      api_key: "test-key",
+      model: "test-model",
+    },
+    scan: {},
+  };
+  const plan = {
+    planning_mode: "plan",
+    framework: "unknown",
+    framework_signals: [],
+    filesystem: { matched_paths: ["faq.html"] },
+    database: { queries: [] },
+    remote: { enabled: false },
+  };
+
+  await buildKnowledgeBase(cwd, { config, plan });
+  const result = await buildKnowledgeBase(cwd, { config, plan, reset: true });
+  const compilerRequests = llm.requests.filter((request) =>
+    String(request?.messages?.[0]?.content || "").includes("website knowledge document compiler"),
+  );
+
+  assert.equal(result.compiled, 1);
+  assert.equal(result.changes.added, 1);
+  assert.equal(result.changes.unchanged, 0);
+  assert.equal(compilerRequests.length, 2);
+});
+
+test("buildKnowledgeBase preserves the previous knowledge base when reset compilation fails", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer({ finishReason: "length" });
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  const paths = runtimePaths(cwd);
+  const previousManifest = `${JSON.stringify({
+    source_hashes: { "previous.html": "previous-hash" },
+    source_doc_map: { "previous.html": "docs/fs-previous-html.md" },
+    index_map: {
+      "previous.html": {
+        doc_path: "docs/fs-previous-html.md",
+        title: "Previous FAQ",
+        summary: "Previous knowledge.",
+        tags: ["previous"],
+        updated_at: "2026-08-03T00:00:00.000Z",
+        is_frequently_asked: true,
+      },
+    },
+  }, null, 2)}\n`;
+
+  await Promise.all([
+    fs.writeFile(path.join(cwd, "faq.html"), "<h1>New FAQ</h1>"),
+    fs.writeFile(path.join(paths.knowledgeDocs, "fs-previous-html.md"), "# Previous FAQ\n"),
+    fs.writeFile(paths.knowledgeIndex, "# Previous Index\n"),
+    fs.writeFile(paths.knowledgeManifest, previousManifest),
+  ]);
+
+  await assert.rejects(
+    buildKnowledgeBase(cwd, {
+      reset: true,
+      config: {
+        llm: {
+          endpoint: llm.endpoint,
+          api_key: "test-key",
+          model: "test-model",
+        },
+        scan: {},
+      },
+      plan: {
+        planning_mode: "plan",
+        framework: "unknown",
+        framework_signals: [],
+        filesystem: { matched_paths: ["faq.html"] },
+        database: { queries: [] },
+        remote: { enabled: false },
+      },
+    }),
+    /LLM doc compile batch failed: LLM output reached max_tokens/,
+  );
+
+  assert.equal(await fs.readFile(path.join(paths.knowledgeDocs, "fs-previous-html.md"), "utf8"), "# Previous FAQ\n");
+  assert.equal(await fs.readFile(paths.knowledgeIndex, "utf8"), "# Previous Index\n");
+  assert.equal(await fs.readFile(paths.knowledgeManifest, "utf8"), previousManifest);
 });
 
 test("buildKnowledgeBase forwards raw source content to the document compiler", async (context) => {

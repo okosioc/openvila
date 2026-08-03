@@ -3,7 +3,7 @@
 OpenVila is an open-source customer service system powered by LLMs.
 
 It supports:
-- scanning documents, database records, and remote URLs, then using an LLM to compile them into a knowledge base
+- scanning documents, database records, and remote URLs, then using an LLM to compile them into a knowledge base, inspired by [Andrej Karpathy's LLM Wiki concept](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - a built-in chat service and website widget that answers from the knowledge base, with Telegram and other owner channels for human handoff
 - custom Skills for precise tasks that knowledge-base answers cannot reliably complete
 - custom chat companions (Vilas)
@@ -118,7 +118,7 @@ openvila run
 2. show scan scope for owner confirmation
 3. write the confirmed scope to editable `.openvila/scan-plan`; later scans reuse it without LLM source planning
 4. scan selected sources (filesystem / scan-plan database tables / optional remote pages and sitemap)
-5. default incremental diff (`added/changed/deleted/unchanged`) by source hash, unless `--reset`, then LLM batch-compiles only `added/changed` sources into `knowledges/docs/*.md` (including `is_frequently_asked`)
+5. compare source hashes (`added/changed/deleted/unchanged`); normally LLM batch-compiles only `added/changed` sources into `knowledges/docs/*.md` (including `is_frequently_asked`), while `--reset` recompiles every selected source
 6. update/remove compiled docs for changed/deleted sources, then regenerate `knowledges/index.md` from `index_map` every run:
    - first section lists only frequent customer concern docs
    - all sections are sorted by `docs/*` file name
@@ -130,7 +130,7 @@ Before LLM planning, `/scan` follows root `.gitignore`, skips styles (`.css`, `.
 
 #### Scan Plan
 
-After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite it, then fully rebuild the knowledge base.
+After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite the scan plan, then fully recompile the selected knowledge sources.
 
 Every interactive scan confirmation, including scan-plan mode, accepts `e` to edit the plan. OpenVila opens `$VISUAL`, then `$EDITOR`, or `vi`, validates the edited lines, and shows the updated scan scope for a second confirmation. The final `.openvila/scan-plan` is written only after confirmation.
 
@@ -211,7 +211,7 @@ For example, a `25000`-character terms page is truncated to its first `20000` ch
 
 Useful flags:
 - `--dry-run`: preview plan only, no writes
-- `--reset`: regenerate `scan-plan` with LLM and fully rebuild the knowledge base
+- `--reset`: regenerate `scan-plan` with LLM and fully recompile selected knowledge sources
 - `--yes`: skip interactive confirmation and use defaults
 - `--no-db`: skip scan-plan database tables and automatic database discovery
 - `--no-remote`: skip sitemap planning and crawling
@@ -222,7 +222,7 @@ Knowledge documents work best for stable, explanatory content such as FAQs, poli
 
 Use a Skill when the site already has an API or endpoint that can return the exact current result, for example site search, product lookup, order status, availability, or filtered records. A Skill lets the LLM choose a confirmed capability, extract its inputs from the visitor message, and let the existing site logic perform matching, filtering, and link generation.
 
-Write the owner-facing definition in natural language under `skills/<name>.md`. It should describe when the Skill applies, values to extract from the visitor message, the HTTP API to call, and how to present results. For example:
+Write the owner-facing definition in natural language under `.openvila/skills/<name>.md`. It should describe when the Skill applies, values to extract from the visitor message, the HTTP API to call, and how to present results. For example:
 
 ```md
 # search
@@ -260,7 +260,7 @@ Manage Skills with:
 /skill delete search
 ```
 
-`add` and `edit` open the Markdown source in the configured editor, then use the LLM once to compile a runtime definition with the exact HTTP method, URL, parameters, and result instruction. OpenVila prints that definition and requires owner confirmation before enabling it. The confirmed definition and its `enabled` state are stored in `.openvila/skills/<name>.json`; do not put credentials in the Skill Markdown.
+`add` and `edit` open the Markdown source in the configured editor, then use the LLM once to compile a runtime definition with the exact HTTP method, URL, parameters, and result instruction. OpenVila prints that definition and requires owner confirmation before enabling it. The Markdown source, confirmed definition, and its `enabled` state are stored together in `.openvila/skills/`; do not put credentials in the Skill Markdown.
 
 During a chat, OpenVila injects only enabled Skill names, usage descriptions, and input descriptions into the selection call. If the LLM chooses a Skill, OpenVila executes the confirmed `GET` or `POST` definition, then sends its result to the existing answer call. The model cannot choose an arbitrary endpoint, and Skills do not add a third LLM call during chats.
 
@@ -382,7 +382,7 @@ run:
       at: "01:20"
 ```
 
-- `daily-report`: sends the previous day's visitor questions, Vila answers, and human-support replies through the currently configured notification channel(s). It ignores welcome and handoff system messages, skips session files not updated since yesterday began, then filters messages by their exact timestamps. Long reports are split for channel delivery.
+- `daily-report`: sends the previous day's visitor questions, Vila answers, and human-support replies through the currently configured notification channel(s). It ignores sessions containing only Vila's welcome message, excludes welcome and handoff system messages from other sessions, skips session files not updated since yesterday began, then filters messages by their exact timestamps. Long reports are split for channel delivery.
 - `housekeeping`: removes `.openvila/logs/*.log` files older than 30 days.
 - `scan`: runs the same incremental knowledge refresh as `/scan --yes`.
 
@@ -402,8 +402,6 @@ On first UI launch, OpenVila asks for confirmation, then creates runtime files i
 ```text
 my-website/
   ...
-  skills/
-    search.md
   .openvila/
     .gitignore
     config.yaml
@@ -414,6 +412,7 @@ my-website/
       docs/
     vilas/
     skills/
+      search.md
       search.json
     logs/
     chats/
@@ -526,20 +525,16 @@ If you do not use `npm link`, replace `openvila` with `node ../../src/index.js` 
 
 The Flask demo creates and seeds `data/blog.db` when it starts. The WordPress-style demo loads `sql/init.sql` into MySQL and exposes database-backed posts at `/posts.php`; it is useful for validating database discovery and scanning. See the README in each demo directory for routes, local-MySQL setup, and framework-specific troubleshooting.
 
-## Publishing
-
-GitHub Actions publishes npm releases through the Trusted Publishing workflow at `.github/workflows/publish-npm.yml`. npm trusted publishers are configured on an existing package, so publish the first version manually, then configure a trusted publisher for package `openvila` with repository `okosioc/openvila` and workflow file `publish-npm.yml`.
-
-To release, update `package.json` to the target version, commit the change, then push a matching tag such as `v0.1.1`. The workflow runs `npm test`, verifies that the tag matches `package.json`, and publishes with provenance.
-
 ## TODO
 
+- [ ] Add security protections, including rate limiting and prompt-injection safeguards.
 - [x] Add lightweight Markdown rendering in the Widget for bold text and links.
 - [x] Let the Widget use a 33%-opacity configured color for visitor-message bubble backgrounds and show message timestamps.
 - [ ] Let the Widget use browser notifications to alert visitors when human support replies.
 - [x] Include a visitor label, IP address, and country in the first human-takeover notification.
 - [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
 - [x] Add Skills that call existing website APIs, such as search.
+- [ ] Let Skills run specified command-line scripts.
 - [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
 - [x] Support `http://` and `https://` entries in `scan-plan` by fetching those pages through the remote scan flow.
 - [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.

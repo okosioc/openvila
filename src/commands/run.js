@@ -2,8 +2,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { startChatService } from "../core/chat-service.js";
 import { ensureWidgetPreview } from "../core/install.js";
+import { loadKnowledgeIndex } from "../core/knowledge.js";
 import { loadConfig } from "../core/runtime.js";
 import { startRunSchedules } from "../core/scheduler.js";
+import { listSkills } from "../core/skill.js";
 import { pick } from "../i18n/messages.js";
 import { cliVersion } from "../utils/version.js";
 import { runScan } from "./scan.js";
@@ -23,6 +25,8 @@ export async function runRun(ctx, argv, dependencies = {}) {
   const startService = dependencies.startChatService || startChatService;
   const ensurePreview = dependencies.ensureWidgetPreview || ensureWidgetPreview;
   const getCliVersion = dependencies.cliVersion || cliVersion;
+  const loadKnowledge = dependencies.loadKnowledgeIndex || loadKnowledgeIndex;
+  const listEnabledSkills = dependencies.listSkills || listSkills;
   const startSchedules = dependencies.startRunSchedules || startRunSchedules;
   const runScheduledScan = dependencies.runScan || runScan;
   const runtimeProcess = dependencies.process || process;
@@ -56,7 +60,11 @@ export async function runRun(ctx, argv, dependencies = {}) {
   await ensurePreview(ctx.cwd);
   const service = await startService(ctx.cwd, config, { port });
   let scheduler = null;
+  let knowledgeIndex = null;
+  let enabledSkills = [];
   try {
+    knowledgeIndex = await loadKnowledge(ctx.cwd);
+    enabledSkills = await listEnabledSkills(ctx.cwd, { enabledOnly: true });
     scheduler = startSchedules(ctx.cwd, config, {
       log: ctx.log,
       scan: () => runScheduledScan(ctx, { options: { yes: true } }),
@@ -66,6 +74,11 @@ export async function runRun(ctx, argv, dependencies = {}) {
     throw error;
   }
   const version = await getCliVersion();
+  const knowledgeStats = knowledgeIndex?.source_stats || {};
+  const knowledgeFiles = Number(knowledgeStats.filesystem || 0);
+  const knowledgeDatabase = Number(knowledgeStats.database || 0);
+  const knowledgeRemote = Number(knowledgeStats.remote || 0);
+  const skillNames = enabledSkills.map((skill) => skill.name).join(", ") || "none";
 
   ctx.log(
     pick(
@@ -77,6 +90,8 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `预览: http://127.0.0.1:${service.port}/widget`,
         `聊天接口: POST http://127.0.0.1:${service.port}/openvila/chat`,
         `Telegram 人工接管轮询: ${service.telegram_polling ? "已启用" : "未启用"}`,
+        `知识库文档：文件=${knowledgeFiles}, 数据库=${knowledgeDatabase}, 远程=${knowledgeRemote}`,
+        `已激活技能: ${skillNames}`,
         `定时任务: ${scheduler.schedules.length > 0 ? scheduler.schedules.map((item) => `${item.task}@${item.at}`).join(", ") : "未配置"}`,
         "按 Ctrl+C 退出",
       ].join("\n"),
@@ -87,6 +102,8 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `Preview: http://127.0.0.1:${service.port}/widget`,
         `Chat API: POST http://127.0.0.1:${service.port}/openvila/chat`,
         `Telegram handoff polling: ${service.telegram_polling ? "enabled" : "disabled"}`,
+        `Knowledge documents: files=${knowledgeFiles}, database=${knowledgeDatabase}, remote=${knowledgeRemote}`,
+        `Enabled skills: ${skillNames}`,
         `Scheduled tasks: ${scheduler.schedules.length > 0 ? scheduler.schedules.map((item) => `${item.task}@${item.at}`).join(", ") : "none"}`,
         "Press Ctrl+C to stop",
       ].join("\n"),

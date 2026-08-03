@@ -457,6 +457,7 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(llm.requests[0].max_tokens, 4096);
     assert.equal(llm.requests[1].max_tokens, 4096);
     assert.match(llm.requests[0].messages[0].content, /If an enabled skill directly fulfills the visitor's task/);
+    assert.match(llm.requests[0].messages[0].content, /use its exact URL in a Markdown link with text that fits direct_answer/);
     assert.match(llm.requests[0].messages[0].content, /choose the 1 or 2 documents from Document index that best answer the visitor's question using Recent chat history/);
     assert.match(llm.requests[1].messages[0].content, /selected documents contain a relevant complete Markdown link/);
     assert.match(llm.requests[1].messages[0].content, /Rules:\n\(1\).*\n\(2\).*\n\(3\)/s);
@@ -507,7 +508,7 @@ test("chat executes an enabled skill and provides its result to the answer model
           body: {},
         },
         output_instruction: "Return matching items as Markdown links.",
-        source_path: "skills/search.md",
+        source_path: ".openvila/skills/search.md",
         updated_at: "2026-07-29T00:00:00.000Z",
       }, null, 2)}\n`,
       "utf8",
@@ -582,7 +583,7 @@ test("chat logs Skill request details and network failure causes", async () => {
           body: {},
         },
         output_instruction: "Return matching items as Markdown links.",
-        source_path: "skills/search.md",
+        source_path: ".openvila/skills/search.md",
         updated_at: "2026-07-31T00:00:00.000Z",
       }, null, 2)}\n`,
       "utf8",

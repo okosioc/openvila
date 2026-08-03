@@ -32,7 +32,6 @@ export function runtimePaths(cwd) {
     knowledges: path.join(base, "knowledges"),
     knowledgeDocs: path.join(base, "knowledges", "docs"),
     skills: path.join(base, "skills"),
-    skillSources: path.join(cwd, "skills"),
     vilas: path.join(base, "vilas"),
     logs: path.join(base, "logs"),
     chats: path.join(base, "chats"),

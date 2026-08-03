@@ -230,7 +230,7 @@ test("runScan applies selected scan sources and reset mode", async () => {
   assert.match(scopeSection, /database table keys \(1\):\n  sqlite:\/\/data\/site\.db::posts/);
   const summaryLog = context.logs.find((line) => line.includes("[scan] 6/6 Summary"));
   assert.doesNotMatch(summaryLog, /framework:/);
-  assert.ok(context.logs.some((line) => line.includes("scan_mode: reset")));
+  assert.ok(context.logs.some((line) => line.includes("knowledge_update: full rebuild (scan-plan regenerated)")));
 });
 
 test("runScan lets the owner edit a generated scan plan before confirming", async () => {
