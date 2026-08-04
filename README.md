@@ -282,6 +282,8 @@ For a local website on another port, load the script from `/run` directly:
 
 By default, the Widget uses the script URL origin as its chat API destination, so `host` and `port` query parameters are unnecessary. Use `data-host`, `data-port`, or the matching query parameters only to override that destination. Set the launcher and Send button background with `data-color` or `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue. Set `data-user` to an optional visitor label rendered by your website, such as `id=42, Alice`; it is shown only in the first human-takeover notification and is not a trusted identity. `/run` allows CORS only when the website and OpenVila service use the same hostname on different ports, including local loopback aliases such as `localhost` and `127.0.0.1`.
 
+The launcher and its optional page-top button are a single floating group. Use `side=left` or `side=right` (default) and `bottom=0` to `bottom=480` (default `20`) to avoid an existing site floating control; use the corresponding `data-side` and `data-bottom` attributes if preferred. The page-top button is enabled by default, appears above the launcher after the page scrolls down, and has a white background. It hides while the chat panel is open. Set `scroll_top=0` or `data-scroll-top="0"` to disable it.
+
 For an HTTPS website, browsers block a direct `http://<host>:9394/...` script as mixed content. `/run` serves HTTP only, so expose it through your HTTPS reverse proxy and use a same-origin script URL:
 
 ```html
@@ -527,14 +529,14 @@ The Flask demo creates and seeds `data/blog.db` when it starts. The WordPress-st
 
 ## TODO
 
-- [ ] Add security protections, including rate limiting and prompt-injection safeguards.
+- [x] Add rate limiting for chating.
 - [x] Add lightweight Markdown rendering in the Widget for bold text and links.
 - [x] Let the Widget use a 33%-opacity configured color for visitor-message bubble backgrounds and show message timestamps.
 - [ ] Let the Widget use browser notifications to alert visitors when human support replies.
 - [x] Include a visitor label, IP address, and country in the first human-takeover notification.
 - [ ] Add Feishu two-way human takeover: receive owner replies, map them to visitor sessions, deliver replies to the widget, and support ending manual support.
 - [x] Add Skills that call existing website APIs, such as search.
-- [ ] Let Skills run specified command-line scripts.
+- [ ] Let Skills run specified command-line scripts, needing prompt-injection safeguards.
 - [ ] Add scan-plan database filters with `field_comparator` query parameters, such as `postgresql://.../site::posts?status_eq=published&published_gte=2026-01-01`, and translate them into parameterized SQL or MongoDB filters. For example, when WordPress is detected, default its posts source to `post_status_eq=publish`.
 - [x] Support `http://` and `https://` entries in `scan-plan` by fetching those pages through the remote scan flow.
 - [ ] For documentation frameworks such as Hugo and Astro, infer content directories and add scan-plan glob rules automatically; mark files matched by those rules with `*` in the UI scan-scope list.

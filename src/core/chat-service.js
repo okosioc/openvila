@@ -1237,6 +1237,7 @@ export async function startChatService(cwd, config, options = {}) {
   const paths = runtimePaths(cwd);
   const port = Number(options.port || config.run.port || 9394);
   const chatEventSubscribers = new Map();
+  const thinkingRequests = new Map();
 
   function removeChatEventSubscriber(sessionId, subscriber) {
     const subscribers = chatEventSubscribers.get(sessionId);
@@ -1418,7 +1419,7 @@ export async function startChatService(cwd, config, options = {}) {
     });
   }
 
-  function queueSubmittedMessage(identity, message, clientMessageId, req, route, visitorLocale, pageUrl, visitorUser) {
+  function queueSubmittedMessage(identity, message, clientMessageId, req, route, visitorLocale, pageUrl, visitorUser, isThinking) {
     const task = enqueueSessionProcess(identity.session_id, async () => {
       await ensureChatWelcome(identity, req, route, visitorLocale);
       const submitted = await submitUserMessage(paths, identity, message, clientMessageId, {
@@ -1445,7 +1446,13 @@ export async function startChatService(cwd, config, options = {}) {
         });
       }
     });
-    task.catch(() => undefined);
+    task
+      .finally(() => {
+        if (isThinking && thinkingRequests.get(identity.session_id) === clientMessageId) {
+          thinkingRequests.delete(identity.session_id);
+        }
+      })
+      .catch(() => undefined);
   }
 
   const server = http.createServer(async (req, res) => {
@@ -1587,7 +1594,31 @@ export async function startChatService(cwd, config, options = {}) {
         }
 
         const clientMessageId = normalizeClientMessageId(body.client_message_id) || crypto.randomUUID();
-        queueSubmittedMessage(identity, message, clientMessageId, req, CHAT_API_PATH, visitorLocale, pageUrl, visitorUser);
+        const activeHandoff = await readTelegramHandoff(paths, identity.session_id);
+        const isThinking = !isOpenTelegramHandoff(activeHandoff);
+        if (isThinking) {
+          const thinkingClientMessageId = thinkingRequests.get(identity.session_id);
+          if (thinkingClientMessageId) {
+            if (thinkingClientMessageId === clientMessageId) {
+              sendJson(res, 202, {
+                ok: true,
+                accepted: true,
+                session_id: identity.session_id,
+                client_message_id: clientMessageId,
+              });
+              return;
+            }
+            writeChatSessionLog("chat_request_rejected", req, identity, {
+              route: CHAT_API_PATH,
+              reason: "is_thinking",
+            });
+            sendJson(res, 429, { error: "Vila is still preparing a reply. Please wait." });
+            return;
+          }
+          thinkingRequests.set(identity.session_id, clientMessageId);
+        }
+
+        queueSubmittedMessage(identity, message, clientMessageId, req, CHAT_API_PATH, visitorLocale, pageUrl, visitorUser, isThinking);
         sendJson(res, 202, {
           ok: true,
           accepted: true,

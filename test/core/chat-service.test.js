@@ -74,7 +74,7 @@ async function createStreamingLlm(options = {}) {
     if (body.stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n');
-      await delay(10);
+      await delay(options.streamDelay ?? 10);
       response.write('data: {"choices":[{"delta":{"content":" from Vila"}}]}\n\n');
       response.end("data: [DONE]\n\n");
       return;
@@ -472,6 +472,56 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(session.messages.at(-1).id, finalMessage.data.id);
   } finally {
     await events.close();
+    await chat.close();
+    await llm.close();
+  }
+});
+
+test("chat rejects another non-handoff message while Vila is thinking", async () => {
+  const llm = await createStreamingLlm({ streamDelay: 100 });
+  const chat = await createChatService({ llm, knowledge: true });
+
+  try {
+    const first = await requestJson(chat.baseUrl, "/openvila/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "visitor-thinking",
+        client_message_id: "thinking-first",
+        message: "What does the FAQ say?",
+      }),
+    });
+    const rejected = await requestJson(chat.baseUrl, "/openvila/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "visitor-thinking",
+        client_message_id: "thinking-second",
+        message: "Can I ask another question?",
+      }),
+    });
+
+    assert.equal(first.status, 202);
+    assert.equal(rejected.status, 429);
+    assert.equal(rejected.body.error, "Vila is still preparing a reply. Please wait.");
+    const completed = await waitFor(async () => {
+      const session = await readSession(chat.cwd, "visitor-thinking");
+      return session?.messages.length === 3 ? session : null;
+    }, "first reply completion");
+    assert.equal(completed.messages[1].content, "What does the FAQ say?");
+
+    const next = await requestJson(chat.baseUrl, "/openvila/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "visitor-thinking",
+        client_message_id: "thinking-third",
+        message: "Can I ask another question?",
+      }),
+    });
+    assert.equal(next.status, 202);
+    await waitFor(async () => {
+      const session = await readSession(chat.cwd, "visitor-thinking");
+      return session?.messages.length === 5 ? session : null;
+    }, "second reply completion");
+  } finally {
     await chat.close();
     await llm.close();
   }

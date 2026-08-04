@@ -9,6 +9,9 @@
     var port = "";
     var color = "";
     var user = "";
+    var side = "";
+    var bottom = "";
+    var scrollTop = "";
     var scriptUrl = null;
 
     var script = document.currentScript;
@@ -22,6 +25,9 @@
       port = String(script.getAttribute("data-port") || "").trim();
       color = String(script.getAttribute("data-color") || "").trim();
       user = String(script.getAttribute("data-user") || "").trim();
+      side = String(script.getAttribute("data-side") || "").trim();
+      bottom = String(script.getAttribute("data-bottom") || "").trim();
+      scrollTop = String(script.getAttribute("data-scroll-top") || "").trim();
 
       var src = String(script.getAttribute("src") || "").trim();
       if (src) {
@@ -30,9 +36,15 @@
           var queryHost = String(scriptUrl.searchParams.get("host") || "").trim();
           var queryPort = String(scriptUrl.searchParams.get("port") || "").trim();
           var queryColor = String(scriptUrl.searchParams.get("color") || "").trim();
+          var querySide = String(scriptUrl.searchParams.get("side") || "").trim();
+          var queryBottom = String(scriptUrl.searchParams.get("bottom") || "").trim();
+          var queryScrollTop = String(scriptUrl.searchParams.get("scroll_top") || "").trim();
           if (queryHost) host = queryHost;
           if (queryPort) port = queryPort;
           if (queryColor) color = queryColor;
+          if (querySide) side = querySide;
+          if (queryBottom) bottom = queryBottom;
+          if (queryScrollTop) scrollTop = queryScrollTop;
         } catch (error) {
           // ignore malformed src url
         }
@@ -51,7 +63,20 @@
       port = "9394";
     }
 
-    return { host: host, port: port, color: color, user: user };
+    var parsedBottom = Number(bottom);
+    if (!String(bottom).trim() || !Number.isFinite(parsedBottom) || parsedBottom < 0 || parsedBottom > 480) {
+      parsedBottom = 20;
+    }
+
+    return {
+      host: host,
+      port: port,
+      color: color,
+      user: user,
+      side: String(side || "right").toLowerCase() === "left" ? "left" : "right",
+      bottom: Math.round(parsedBottom),
+      scrollTop: !["0", "false", "no", "off"].includes(String(scrollTop || "").toLowerCase()),
+    };
   }
 
   function buildApiBase(config) {
@@ -83,12 +108,14 @@
 
   var widgetConfig = resolveConfig();
   var apiBase = buildApiBase(widgetConfig);
-  var visitorBubbleBackground = thirdOpacityColor(widgetConfig.color || "#2563eb");
+  var widgetColor = widgetConfig.color || "#2563eb";
+  var visitorBubbleBackground = thirdOpacityColor(widgetColor);
   var SESSION_ID_KEY = "openvila_session_id";
   var HANDOFF_SESSION_ID_KEY = "openvila_handoff_session_id";
   var HANDOFF_READ_AT_KEY = "openvila_handoff_read_at";
   var CHAT_HISTORY_LIMIT = 200;
   var CHAT_HISTORY_REFRESH_MS = 3000;
+  var SCROLL_TOP_VISIBLE_AT = 240;
   var renderedMessageIds = Object.create(null);
   var renderedClientMessageIds = Object.create(null);
   var streamingMessageViews = Object.create(null);
@@ -103,6 +130,10 @@
   var CLOSE_ICON_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round">' +
     '<path d="m6 6 12 12"></path><path d="m18 6-12 12"></path>' +
+    "</svg>";
+  var SCROLL_TOP_ICON_SVG =
+    '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round">' +
+    '<path d="m6 14 6-6 6 6"></path><path d="M12 8v10"></path>' +
     "</svg>";
 
   function generateId(prefix) {
@@ -249,8 +280,8 @@
   var panel = document.createElement("div");
   panel.id = "openvila-panel";
   panel.style.position = "fixed";
-  panel.style.right = "20px";
-  panel.style.bottom = "84px";
+  panel.style[widgetConfig.side] = "20px";
+  panel.style.bottom = String(widgetConfig.bottom + 64) + "px";
   panel.style.width = "360px";
   panel.style.maxWidth = "calc(100vw - 24px)";
   panel.style.height = "520px";
@@ -279,16 +310,14 @@
     "</div>" +
     '<div style="margin-top:6px;text-align:right;color:#94a3b8;font:11px/1.2 sans-serif"><a href="https://openvila.com" target="_blank" rel="noopener noreferrer" aria-label="OpenVila website (opens in a new tab)" style="display:inline-flex;align-items:center;gap:3px;color:inherit;text-decoration:none">Powered by OpenVila<svg viewBox="0 0 24 24" aria-hidden="true" style="width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M14 3h7v7"></path><path d="M10 14 21 3"></path><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"></path></svg></a></div>' +
     "</form>";
-  panel.querySelector("#openvila-submit").style.background = widgetConfig.color || "#2563eb";
+  panel.querySelector("#openvila-submit").style.background = widgetColor;
 
   var button = document.createElement("button");
   button.id = "openvila-launcher";
   button.innerHTML = CHAT_ICON_SVG;
   button.setAttribute("aria-label", "Open chat");
   button.title = "Open chat";
-  button.style.position = "fixed";
-  button.style.right = "20px";
-  button.style.bottom = "20px";
+  button.style.position = "relative";
   button.style.width = "52px";
   button.style.height = "52px";
   button.style.borderRadius = "50%";
@@ -314,6 +343,59 @@
   unreadSupportIndicator.style.display = "none";
   unreadSupportIndicator.style.pointerEvents = "none";
   button.appendChild(unreadSupportIndicator);
+
+  var scrollTopButton = null;
+  if (widgetConfig.scrollTop) {
+    scrollTopButton = document.createElement("button");
+    scrollTopButton.id = "openvila-scroll-top";
+    scrollTopButton.innerHTML = SCROLL_TOP_ICON_SVG;
+    scrollTopButton.setAttribute("aria-label", "Back to top");
+    scrollTopButton.title = "Back to top";
+    scrollTopButton.style.width = "44px";
+    scrollTopButton.style.height = "44px";
+    scrollTopButton.style.borderRadius = "50%";
+    scrollTopButton.style.border = "1px solid #e2e8f0";
+    scrollTopButton.style.background = "#fff";
+    scrollTopButton.style.color = widgetColor;
+    scrollTopButton.style.display = "none";
+    scrollTopButton.style.placeItems = "center";
+    scrollTopButton.style.cursor = "pointer";
+    scrollTopButton.style.boxShadow = "0 8px 20px rgba(15,23,42,.16)";
+    scrollTopButton.addEventListener("click", function () {
+      if (typeof window.scrollTo === "function") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    });
+  }
+
+  var floatingActions = document.createElement("div");
+  floatingActions.id = "openvila-actions";
+  floatingActions.style.position = "fixed";
+  floatingActions.style[widgetConfig.side] = "20px";
+  floatingActions.style.bottom = String(widgetConfig.bottom) + "px";
+  floatingActions.style.display = "flex";
+  floatingActions.style.flexDirection = "column";
+  floatingActions.style.alignItems = "center";
+  floatingActions.style.gap = "8px";
+  floatingActions.style.zIndex = "2147483647";
+  if (scrollTopButton) {
+    floatingActions.appendChild(scrollTopButton);
+  }
+  floatingActions.appendChild(button);
+
+  function updateScrollTopButton() {
+    var scrollY = Number(window.scrollY || window.pageYOffset || 0);
+    var visible = Boolean(scrollTopButton && panel.style.display === "none" && scrollY > SCROLL_TOP_VISIBLE_AT);
+    if (scrollTopButton) {
+      scrollTopButton.style.display = visible ? "grid" : "none";
+    }
+    panel.style.bottom = String(widgetConfig.bottom + 64 + (visible ? 52 : 0)) + "px";
+  }
+
+  if (typeof window.addEventListener === "function") {
+    window.addEventListener("scroll", updateScrollTopButton, { passive: true });
+  }
+  updateScrollTopButton();
 
   function append(role, text, options) {
     var messageOptions = options || {};
@@ -582,6 +664,7 @@
 
   function hidePanel() {
     panel.style.display = "none";
+    updateScrollTopButton();
     if (!hasSavedHandoffSession()) {
       closeChatEvents();
     }
@@ -591,6 +674,7 @@
     if (event && event.isTrusted === false) return;
 
     panel.style.display = panel.style.display === "none" ? "block" : "none";
+    updateScrollTopButton();
     if (panel.style.display === "block") {
       chatIdentity = chatIdentity || getOrCreateIdentity();
       markSupportRepliesRead();
@@ -660,7 +744,7 @@
   });
 
   document.body.appendChild(panel);
-  document.body.appendChild(button);
+  document.body.appendChild(floatingActions);
 
   var savedHandoffSessionId = readStorage(window.localStorage, HANDOFF_SESSION_ID_KEY);
   if (savedHandoffSessionId) {

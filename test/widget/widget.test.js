@@ -110,6 +110,8 @@ function createWidgetHarness(options = {}) {
   const eventSources = [];
   const storage = new Map(Object.entries(options.storage || {}));
   const fetchCalls = [];
+  const scrollToCalls = [];
+  const windowListeners = new Map();
   let uuidSequence = 0;
 
   class FakeEventSource {
@@ -177,12 +179,24 @@ function createWidgetHarness(options = {}) {
     navigator: {
       language: options.visitorLocale || "en-US",
     },
+    scrollY: Number(options.scrollY || 0),
+    addEventListener(type, listener) {
+      const listeners = windowListeners.get(type) || [];
+      listeners.push(listener);
+      windowListeners.set(type, listeners);
+    },
+    async emit(type, event = {}) {
+      const listeners = windowListeners.get(type) || [];
+      await Promise.all(listeners.map((listener) => listener(event)));
+    },
+    scrollTo: (options) => scrollToCalls.push(options),
   };
 
   return {
     document,
     eventSources,
     fetchCalls,
+    scrollToCalls,
     storage,
     context: {
       Date,
@@ -279,6 +293,62 @@ test("widget query color overrides the script attribute", async () => {
 
   assert.equal(launcher.style.background, "#be123c");
   assert.equal(submit.style.background, "#be123c");
+});
+
+test("widget groups a white scroll-to-top button above the launcher", async () => {
+  const harness = await loadWidget({
+    open: false,
+    scrollY: 300,
+    scriptAttributes: {
+      "data-color": "#0f766e",
+      "data-side": "left",
+      "data-bottom": "96",
+    },
+  });
+  const actions = harness.document.getElementById("openvila-actions");
+  const scrollTop = harness.document.getElementById("openvila-scroll-top");
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const panel = harness.document.getElementById("openvila-panel");
+
+  assert.equal(actions.style.left, "20px");
+  assert.equal(actions.style.bottom, "96px");
+  assert.deepEqual(actions.children, [scrollTop, launcher]);
+  assert.equal(scrollTop.style.background, "#fff");
+  assert.equal(scrollTop.style.color, "#0f766e");
+  assert.equal(scrollTop.style.display, "grid");
+  assert.equal(panel.style.left, "20px");
+  assert.equal(panel.style.bottom, "212px");
+
+  await scrollTop.emit("click");
+  assert.equal(harness.scrollToCalls.length, 1);
+  assert.equal(harness.scrollToCalls[0].top, 0);
+  assert.equal(harness.scrollToCalls[0].behavior, "smooth");
+});
+
+test("widget hides the scroll-to-top button while the chat panel is open", async () => {
+  const harness = await loadWidget({ scrollY: 300 });
+  const scrollTop = harness.document.getElementById("openvila-scroll-top");
+  const panel = harness.document.getElementById("openvila-panel");
+  const close = harness.document.getElementById("openvila-close");
+
+  assert.equal(panel.style.display, "block");
+  assert.equal(scrollTop.style.display, "none");
+  assert.equal(panel.style.bottom, "84px");
+
+  await close.emit("click");
+  assert.equal(panel.style.display, "none");
+  assert.equal(scrollTop.style.display, "grid");
+  assert.equal(panel.style.bottom, "136px");
+});
+
+test("widget can disable the scroll-to-top button", async () => {
+  const harness = await loadWidget({
+    open: false,
+    scriptAttributes: { src: "/openvila/widget.js?scroll_top=0" },
+  });
+
+  assert.equal(harness.document.getElementById("openvila-scroll-top"), null);
+  assert.equal(harness.document.getElementById("openvila-panel").style.bottom, "84px");
 });
 
 test("widget sends the visitor browser language for welcome selection", async () => {
