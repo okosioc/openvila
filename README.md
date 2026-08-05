@@ -6,7 +6,7 @@ It supports:
 - scanning documents, database records, and remote URLs, then using an LLM to compile them into a knowledge base, inspired by [Andrej Karpathy's LLM Wiki concept](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)
 - a built-in chat service and website widget that answers from the knowledge base, with Telegram and other owner channels for human handoff
 - custom Skills for precise tasks that knowledge-base answers cannot reliably complete
-- custom chat companions (Vilas)
+- custom chat companions (Vilas) compatible with [Codex Pets](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/codex-pet-contract.md)
 
 ## Install OpenVila CLI
 
@@ -401,7 +401,9 @@ run:
 
 ## Vilas
 
-Install a Codex-compatible Vila from a Petdex pet page. OpenVila downloads the pet metadata and spritesheet into `.openvila/vilas/<slug>/`, then activates it in `.openvila/config.yaml`.
+`Vila` is compatible with [Codex Pets](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/codex-pet-contract.md).
+
+You can install it from openvila.com or petdex.dev. OpenVila downloads the pet metadata and spritesheet into `.openvila/vilas/<slug>/`, then activates it in `.openvila/config.yaml`.
 
 ```bash
 openvila vila install https://petdex.dev/pets/arcueid-dress
@@ -410,7 +412,7 @@ openvila vila disable
 openvila vila delete arcueid-dress
 ```
 
-When a Vila is active, the widget launcher uses its Codex-compatible 9-row × 8-column spritesheet. WebP spritesheets must be exactly `1536×1872` pixels (`192×208` per cell); OpenVila rejects an incompatible WebP during installation. See the [Codex animation row reference](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/animation-rows.md) for the atlas layout.
+When a Vila is active, the widget launcher uses its Codex-compatible 9-row × 8-column spritesheet. WebP spritesheets must be exactly `1536×1872` pixels (`192×208` per cell); OpenVila rejects an incompatible WebP during installation. 
 
 Current Widget states:
 
@@ -422,7 +424,7 @@ Current Widget states:
 | Vila or human support replies | `waiting` |
 | A request fails while the panel is open | `failed` |
 
-`idle` uses atlas row 0; `running-right` row 1; `running-left` row 2; `jumping` row 4; `failed` row 5; and `waiting` row 6. `running-left`, `running-right`, and `jumping` loop continuously. `idle`, `waiting`, and `failed` hold their final frame for 5 seconds before looping. Human handoff only changes message delivery: visitor messages stay enabled and are submitted in order; it does not introduce a separate Vila animation state.
+See the [Codex animation row reference](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/animation-rows.md) for the atlas layout. `idle` uses atlas row 0; `running-right` row 1; `running-left` row 2; `jumping` row 4; `failed` row 5; and `waiting` row 6. `running-left`, `running-right`, and `jumping` loop continuously. `idle`, `waiting`, and `failed` hold their final frame for 5 seconds before looping. 
 
 ## Runtime Directory
 
