@@ -67,6 +67,10 @@ class FakeElement {
     this[name] = String(value);
   }
 
+  getAttribute(name) {
+    return this[name] || null;
+  }
+
   querySelector(selector) {
     return this.document.getElementById(selector.replace(/^#/, ""));
   }
@@ -86,6 +90,7 @@ class FakeElement {
 class FakeDocument {
   constructor(scriptAttributes = {}) {
     this.elements = new Map();
+    this.head = new FakeElement(this, "head");
     this.body = new FakeElement(this);
     this.currentScript = {
       getAttribute: (name) => scriptAttributes[name] || "",
@@ -110,8 +115,6 @@ function createWidgetHarness(options = {}) {
   const eventSources = [];
   const storage = new Map(Object.entries(options.storage || {}));
   const fetchCalls = [];
-  const scrollToCalls = [];
-  const windowListeners = new Map();
   let uuidSequence = 0;
 
   class FakeEventSource {
@@ -145,11 +148,20 @@ function createWidgetHarness(options = {}) {
 
   const fetch = async (url, request = {}) => {
     fetchCalls.push({ url, request });
+    if (String(url).endsWith("/openvila/vila")) {
+      return {
+        ok: true,
+        json: async () => options.activeVila || ({ active: false }),
+      };
+    }
     if (String(url).includes("/openvila/chat/history")) {
       return {
         ok: true,
         json: async () => options.historyPayload || ({ messages: [], handoff: { active: false } }),
       };
+    }
+    if (String(url).endsWith("/openvila/chat") && options.chatPost) {
+      return options.chatPost(url, request);
     }
     if (options.failPost) {
       return {
@@ -179,24 +191,12 @@ function createWidgetHarness(options = {}) {
     navigator: {
       language: options.visitorLocale || "en-US",
     },
-    scrollY: Number(options.scrollY || 0),
-    addEventListener(type, listener) {
-      const listeners = windowListeners.get(type) || [];
-      listeners.push(listener);
-      windowListeners.set(type, listeners);
-    },
-    async emit(type, event = {}) {
-      const listeners = windowListeners.get(type) || [];
-      await Promise.all(listeners.map((listener) => listener(event)));
-    },
-    scrollTo: (options) => scrollToCalls.push(options),
   };
 
   return {
     document,
     eventSources,
     fetchCalls,
-    scrollToCalls,
     storage,
     context: {
       Date,
@@ -215,7 +215,9 @@ async function loadWidget(options = {}) {
   const source = await fs.readFile(widgetPath, "utf8");
   const harness = createWidgetHarness(options);
   vm.runInNewContext(source, harness.context, { filename: widgetPath });
-  await Promise.resolve();
+  for (let index = 0; index < 6; index += 1) {
+    await Promise.resolve();
+  }
   if (options.open !== false) {
     await harness.document.getElementById("openvila-launcher").emit("click", { isTrusted: true });
   }
@@ -233,11 +235,12 @@ test("widget creates a session only after a trusted launcher click", async () =>
   const launcher = harness.document.getElementById("openvila-launcher");
 
   assert.equal(harness.storage.get("openvila_session_id"), undefined);
-  assert.equal(harness.fetchCalls.length, 0);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).endsWith("/openvila/vila")).length, 1);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).includes("/openvila/chat/")).length, 0);
 
   await launcher.emit("click", { isTrusted: false });
   assert.equal(harness.storage.get("openvila_session_id"), undefined);
-  assert.equal(harness.fetchCalls.length, 0);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).includes("/openvila/chat/")).length, 0);
 
   await launcher.emit("click", { isTrusted: true });
   assert.match(harness.storage.get("openvila_session_id"), /^session-/);
@@ -251,7 +254,7 @@ test("widget does not restore an ordinary session while the panel is hidden", as
   });
 
   assert.equal(harness.eventSources.length, 0);
-  assert.equal(harness.fetchCalls.length, 0);
+  assert.equal(harness.fetchCalls.filter((call) => String(call.url).includes("/openvila/chat/")).length, 0);
 });
 
 test("widget uses a visitor-facing title with OpenVila attribution", async () => {
@@ -295,60 +298,145 @@ test("widget query color overrides the script attribute", async () => {
   assert.equal(submit.style.background, "#be123c");
 });
 
-test("widget groups a white scroll-to-top button above the launcher", async () => {
+test("widget renders the active Vila and updates its animation state", async () => {
   const harness = await loadWidget({
     open: false,
-    scrollY: 300,
-    scriptAttributes: {
-      "data-color": "#0f766e",
-      "data-side": "left",
-      "data-bottom": "96",
+    activeVila: {
+      active: true,
+      id: "arcueid-dress",
+      spritesheet_url: "/openvila/vilas/arcueid-dress/spritesheet.webp",
     },
   });
-  const actions = harness.document.getElementById("openvila-actions");
-  const scrollTop = harness.document.getElementById("openvila-scroll-top");
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const close = harness.document.getElementById("openvila-close");
+  const form = harness.document.getElementById("openvila-form");
+  const input = harness.document.getElementById("openvila-input");
+  const sprite = launcher.children[0];
+
+  assert.equal(sprite.style.backgroundImage, 'url("http://127.0.0.1:9394/openvila/vilas/arcueid-dress/spritesheet.webp")');
+  assert.equal(sprite.style.width, "96px");
+  assert.equal(sprite.style.height, "104px");
+  assert.equal(launcher.style.width, "96px");
+  assert.equal(launcher.style.height, "104px");
+  assert.equal(harness.document.getElementById("openvila-vila-styles").href, "http://127.0.0.1:9394/openvila/widget.css");
+  assert.equal(sprite.className, "openvila-vila-sprite");
+  assert.equal(sprite["data-vila-state"], "idle");
+  assert.equal(launcher["data-vila-state"], "idle");
+
+  await launcher.emit("click", { isTrusted: true });
+  const eventSource = harness.eventSources[0];
+  assert.equal(launcher["data-vila-state"], "waiting");
+
+  input.value = "Can you help me?";
+  await input.emit("input");
+  assert.equal(launcher["data-vila-state"], "waiting");
+
+  await form.emit("submit", submitEvent());
+  assert.ok(["running-left", "running-right", "jumping"].includes(launcher["data-vila-state"]));
+
+  eventSource.emit("handoff", { data: JSON.stringify({ active: true, updated_at: new Date().toISOString() }) });
+  assert.ok(["running-left", "running-right", "jumping"].includes(launcher["data-vila-state"]));
+  assert.equal(sprite["data-vila-state"], launcher["data-vila-state"]);
+
+  eventSource.emit("message", {
+    data: JSON.stringify({ id: "handoff-ack", role: "assistant", content: "Human support requested.", ts: new Date(Date.now() + 5).toISOString() }),
+  });
+  assert.equal(launcher["data-vila-state"], "waiting");
+
+  eventSource.emit("message", {
+    data: JSON.stringify({ id: "support-reply", role: "support", content: "I can help.", ts: new Date(Date.now() + 10).toISOString() }),
+  });
+  assert.equal(launcher["data-vila-state"], "waiting");
+
+  await close.emit("click");
+  assert.equal(launcher["data-vila-state"], "idle");
+
+  await launcher.emit("click", { isTrusted: true });
+  assert.equal(launcher["data-vila-state"], "waiting");
+
+  eventSource.emit("vila", { data: JSON.stringify({ state: "failed" }) });
+  assert.equal(launcher["data-vila-state"], "failed");
+});
+
+test("widget scales an active Vila from the vila-size setting", async () => {
+  const harness = await loadWidget({
+    open: false,
+    scriptAttributes: { src: "/openvila/widget.js?vila-size=1&vila-offset-x=-24" },
+    activeVila: {
+      active: true,
+      id: "arcueid-dress",
+      spritesheet_url: "/openvila/vilas/arcueid-dress/spritesheet.webp",
+    },
+  });
+  const launcher = harness.document.getElementById("openvila-launcher");
+  const sprite = launcher.children[0];
+
+  assert.equal(sprite.style.width, "192px");
+  assert.equal(sprite.style.height, "208px");
+  assert.equal(launcher.style.width, "192px");
+  assert.equal(launcher.style.height, "208px");
+  assert.equal(sprite.style.transform, "translateX(-24px)");
+  assert.equal(launcher.style.overflow, "visible");
+});
+
+test("widget queues visitor messages during human support without locking input", async () => {
+  const pendingPosts = [];
+  const sentMessages = [];
+  const harness = await loadWidget({
+    activeVila: {
+      active: true,
+      id: "arcueid-dress",
+      spritesheet_url: "/openvila/vilas/arcueid-dress/spritesheet.webp",
+    },
+    chatPost: (url, request) => {
+      sentMessages.push(JSON.parse(request.body).message);
+      return new Promise((resolve) => pendingPosts.push(resolve));
+    },
+  });
+  const eventSource = harness.eventSources[0];
+  const form = harness.document.getElementById("openvila-form");
+  const input = harness.document.getElementById("openvila-input");
+  const submit = harness.document.getElementById("openvila-submit");
+  const launcher = harness.document.getElementById("openvila-launcher");
+
+  eventSource.emit("handoff", { data: JSON.stringify({ active: true, updated_at: new Date().toISOString() }) });
+  assert.equal(input.disabled, false);
+  assert.equal(submit.disabled, false);
+
+  input.value = "First message";
+  const first = form.emit("submit", submitEvent());
+  await Promise.resolve();
+  assert.ok(["running-left", "running-right", "jumping"].includes(launcher["data-vila-state"]));
+  input.value = "Second message";
+  const second = form.emit("submit", submitEvent());
+  await Promise.resolve();
+  assert.deepEqual(sentMessages, ["First message"]);
+
+  pendingPosts.shift()({ ok: true, json: async () => ({}) });
+  await first;
+  await Promise.resolve();
+  assert.deepEqual(sentMessages, ["First message", "Second message"]);
+
+  pendingPosts.shift()({ ok: true, json: async () => ({}) });
+  await Promise.all([first, second]);
+  assert.equal(input.disabled, false);
+  assert.equal(submit.disabled, false);
+});
+
+test("widget positions the launcher directly above the chat panel", async () => {
+  const harness = await loadWidget({
+    open: false,
+    scriptAttributes: {
+      "data-side": "left",
+    },
+  });
   const launcher = harness.document.getElementById("openvila-launcher");
   const panel = harness.document.getElementById("openvila-panel");
 
-  assert.equal(actions.style.left, "20px");
-  assert.equal(actions.style.bottom, "96px");
-  assert.deepEqual(actions.children, [scrollTop, launcher]);
-  assert.equal(scrollTop.style.background, "#fff");
-  assert.equal(scrollTop.style.color, "#0f766e");
-  assert.equal(scrollTop.style.display, "grid");
+  assert.equal(launcher.style.left, "20px");
+  assert.equal(launcher.style.bottom, "20px");
   assert.equal(panel.style.left, "20px");
-  assert.equal(panel.style.bottom, "212px");
-
-  await scrollTop.emit("click");
-  assert.equal(harness.scrollToCalls.length, 1);
-  assert.equal(harness.scrollToCalls[0].top, 0);
-  assert.equal(harness.scrollToCalls[0].behavior, "smooth");
-});
-
-test("widget hides the scroll-to-top button while the chat panel is open", async () => {
-  const harness = await loadWidget({ scrollY: 300 });
-  const scrollTop = harness.document.getElementById("openvila-scroll-top");
-  const panel = harness.document.getElementById("openvila-panel");
-  const close = harness.document.getElementById("openvila-close");
-
-  assert.equal(panel.style.display, "block");
-  assert.equal(scrollTop.style.display, "none");
   assert.equal(panel.style.bottom, "84px");
-
-  await close.emit("click");
-  assert.equal(panel.style.display, "none");
-  assert.equal(scrollTop.style.display, "grid");
-  assert.equal(panel.style.bottom, "136px");
-});
-
-test("widget can disable the scroll-to-top button", async () => {
-  const harness = await loadWidget({
-    open: false,
-    scriptAttributes: { src: "/openvila/widget.js?scroll_top=0" },
-  });
-
-  assert.equal(harness.document.getElementById("openvila-scroll-top"), null);
-  assert.equal(harness.document.getElementById("openvila-panel").style.bottom, "84px");
 });
 
 test("widget sends the visitor browser language for welcome selection", async () => {
@@ -583,7 +671,10 @@ test("widget renders streamed replies once and unlocks after the completed messa
 });
 
 test("widget restores the form when submitting a message fails", async () => {
-  const harness = await loadWidget({ failPost: true });
+  const harness = await loadWidget({
+    failPost: true,
+    activeVila: { active: true, spritesheet_url: "/openvila/vilas/arcueid-dress/spritesheet.webp" },
+  });
   const form = harness.document.getElementById("openvila-form");
   const input = harness.document.getElementById("openvila-input");
   const submit = harness.document.getElementById("openvila-submit");
@@ -594,4 +685,5 @@ test("widget restores the form when submitting a message fails", async () => {
   assert.equal(input.disabled, false);
   assert.equal(submit.disabled, false);
   assert.equal(submit.textContent, "Send");
+  assert.equal(harness.document.getElementById("openvila-launcher")["data-vila-state"], "failed");
 });

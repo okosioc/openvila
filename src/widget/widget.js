@@ -10,8 +10,8 @@
     var color = "";
     var user = "";
     var side = "";
-    var bottom = "";
-    var scrollTop = "";
+    var vilaSize = "";
+    var vilaOffsetX = "";
     var scriptUrl = null;
 
     var script = document.currentScript;
@@ -26,8 +26,6 @@
       color = String(script.getAttribute("data-color") || "").trim();
       user = String(script.getAttribute("data-user") || "").trim();
       side = String(script.getAttribute("data-side") || "").trim();
-      bottom = String(script.getAttribute("data-bottom") || "").trim();
-      scrollTop = String(script.getAttribute("data-scroll-top") || "").trim();
 
       var src = String(script.getAttribute("src") || "").trim();
       if (src) {
@@ -37,14 +35,14 @@
           var queryPort = String(scriptUrl.searchParams.get("port") || "").trim();
           var queryColor = String(scriptUrl.searchParams.get("color") || "").trim();
           var querySide = String(scriptUrl.searchParams.get("side") || "").trim();
-          var queryBottom = String(scriptUrl.searchParams.get("bottom") || "").trim();
-          var queryScrollTop = String(scriptUrl.searchParams.get("scroll_top") || "").trim();
+          var queryVilaSize = String(scriptUrl.searchParams.get("vila-size") || scriptUrl.searchParams.get("vila_size") || "").trim();
+          var queryVilaOffsetX = String(scriptUrl.searchParams.get("vila-offset-x") || "").trim();
           if (queryHost) host = queryHost;
           if (queryPort) port = queryPort;
           if (queryColor) color = queryColor;
           if (querySide) side = querySide;
-          if (queryBottom) bottom = queryBottom;
-          if (queryScrollTop) scrollTop = queryScrollTop;
+          if (queryVilaSize) vilaSize = queryVilaSize;
+          if (queryVilaOffsetX) vilaOffsetX = queryVilaOffsetX;
         } catch (error) {
           // ignore malformed src url
         }
@@ -63,9 +61,13 @@
       port = "9394";
     }
 
-    var parsedBottom = Number(bottom);
-    if (!String(bottom).trim() || !Number.isFinite(parsedBottom) || parsedBottom < 0 || parsedBottom > 480) {
-      parsedBottom = 20;
+    var parsedVilaSize = Number(vilaSize);
+    if (!Number.isFinite(parsedVilaSize) || parsedVilaSize < 0.25 || parsedVilaSize > 1) {
+      parsedVilaSize = 0.5;
+    }
+    var parsedVilaOffsetX = Number(vilaOffsetX);
+    if (!Number.isFinite(parsedVilaOffsetX)) {
+      parsedVilaOffsetX = 0;
     }
 
     return {
@@ -74,8 +76,8 @@
       color: color,
       user: user,
       side: String(side || "right").toLowerCase() === "left" ? "left" : "right",
-      bottom: Math.round(parsedBottom),
-      scrollTop: !["0", "false", "no", "off"].includes(String(scrollTop || "").toLowerCase()),
+      vilaSize: parsedVilaSize,
+      vilaOffsetX: Math.round(parsedVilaOffsetX),
     };
   }
 
@@ -110,12 +112,13 @@
   var apiBase = buildApiBase(widgetConfig);
   var widgetColor = widgetConfig.color || "#2563eb";
   var visitorBubbleBackground = thirdOpacityColor(widgetColor);
+  var vilaWidth = Math.round(192 * widgetConfig.vilaSize);
+  var vilaHeight = Math.round(208 * widgetConfig.vilaSize);
   var SESSION_ID_KEY = "openvila_session_id";
   var HANDOFF_SESSION_ID_KEY = "openvila_handoff_session_id";
   var HANDOFF_READ_AT_KEY = "openvila_handoff_read_at";
   var CHAT_HISTORY_LIMIT = 200;
   var CHAT_HISTORY_REFRESH_MS = 3000;
-  var SCROLL_TOP_VISIBLE_AT = 240;
   var renderedMessageIds = Object.create(null);
   var renderedClientMessageIds = Object.create(null);
   var streamingMessageViews = Object.create(null);
@@ -123,6 +126,10 @@
   var handoffUpdatedAt = 0;
   var waitingForReply = false;
   var replyWaitStartedAt = 0;
+  var handoffMessageQueue = Promise.resolve();
+  var vilaSprite = null;
+  var launcherHeight = 52;
+  var RUNNING_VILA_STATES = ["running-left", "running-right", "jumping"];
   var CHAT_ICON_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round">' +
     '<path d="M4 5h16v12H9l-5 3V5Z"></path>' +
@@ -130,10 +137,6 @@
   var CLOSE_ICON_SVG =
     '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round">' +
     '<path d="m6 6 12 12"></path><path d="m18 6-12 12"></path>' +
-    "</svg>";
-  var SCROLL_TOP_ICON_SVG =
-    '<svg viewBox="0 0 24 24" aria-hidden="true" style="display:block;width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round">' +
-    '<path d="m6 14 6-6 6 6"></path><path d="M12 8v10"></path>' +
     "</svg>";
 
   function generateId(prefix) {
@@ -281,7 +284,7 @@
   panel.id = "openvila-panel";
   panel.style.position = "fixed";
   panel.style[widgetConfig.side] = "20px";
-  panel.style.bottom = String(widgetConfig.bottom + 64) + "px";
+  panel.style.bottom = String(20 + launcherHeight + 12) + "px";
   panel.style.width = "360px";
   panel.style.maxWidth = "calc(100vw - 24px)";
   panel.style.height = "520px";
@@ -317,9 +320,13 @@
   button.innerHTML = CHAT_ICON_SVG;
   button.setAttribute("aria-label", "Open chat");
   button.title = "Open chat";
-  button.style.position = "relative";
+  button.style.position = "fixed";
+  button.style[widgetConfig.side] = "20px";
+  button.style.bottom = "20px";
   button.style.width = "52px";
   button.style.height = "52px";
+  button.style.boxSizing = "border-box";
+  button.style.padding = "0";
   button.style.borderRadius = "50%";
   button.style.border = "none";
   button.style.background = widgetConfig.color || "linear-gradient(135deg,#2563eb,#0ea5e9)";
@@ -344,58 +351,73 @@
   unreadSupportIndicator.style.pointerEvents = "none";
   button.appendChild(unreadSupportIndicator);
 
-  var scrollTopButton = null;
-  if (widgetConfig.scrollTop) {
-    scrollTopButton = document.createElement("button");
-    scrollTopButton.id = "openvila-scroll-top";
-    scrollTopButton.innerHTML = SCROLL_TOP_ICON_SVG;
-    scrollTopButton.setAttribute("aria-label", "Back to top");
-    scrollTopButton.title = "Back to top";
-    scrollTopButton.style.width = "44px";
-    scrollTopButton.style.height = "44px";
-    scrollTopButton.style.borderRadius = "50%";
-    scrollTopButton.style.border = "1px solid #e2e8f0";
-    scrollTopButton.style.background = "#fff";
-    scrollTopButton.style.color = widgetColor;
-    scrollTopButton.style.display = "none";
-    scrollTopButton.style.placeItems = "center";
-    scrollTopButton.style.cursor = "pointer";
-    scrollTopButton.style.boxShadow = "0 8px 20px rgba(15,23,42,.16)";
-    scrollTopButton.addEventListener("click", function () {
-      if (typeof window.scrollTo === "function") {
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      }
-    });
+  function setVilaState(state) {
+    if (!vilaSprite) return;
+    vilaSprite.setAttribute("data-vila-state", state);
+    button.setAttribute("data-vila-state", state);
   }
 
-  var floatingActions = document.createElement("div");
-  floatingActions.id = "openvila-actions";
-  floatingActions.style.position = "fixed";
-  floatingActions.style[widgetConfig.side] = "20px";
-  floatingActions.style.bottom = String(widgetConfig.bottom) + "px";
-  floatingActions.style.display = "flex";
-  floatingActions.style.flexDirection = "column";
-  floatingActions.style.alignItems = "center";
-  floatingActions.style.gap = "8px";
-  floatingActions.style.zIndex = "2147483647";
-  if (scrollTopButton) {
-    floatingActions.appendChild(scrollTopButton);
+  function setDefaultVilaState() {
+    setVilaState(panel.style.display === "block" ? "waiting" : "idle");
   }
-  floatingActions.appendChild(button);
 
-  function updateScrollTopButton() {
-    var scrollY = Number(window.scrollY || window.pageYOffset || 0);
-    var visible = Boolean(scrollTopButton && panel.style.display === "none" && scrollY > SCROLL_TOP_VISIBLE_AT);
-    if (scrollTopButton) {
-      scrollTopButton.style.display = visible ? "grid" : "none";
+  function setRunningVilaState() {
+    var index = Math.floor(Math.random() * RUNNING_VILA_STATES.length);
+    setVilaState(RUNNING_VILA_STATES[index]);
+  }
+
+  function activateVila(vila) {
+    var spriteUrl;
+    try {
+      spriteUrl = new URL(String(vila.spritesheet_url || ""), apiBase).toString();
+    } catch (error) {
+      return;
     }
-    panel.style.bottom = String(widgetConfig.bottom + 64 + (visible ? 52 : 0)) + "px";
+    if (!spriteUrl) return;
+
+    var vilaStyles = document.getElementById("openvila-vila-styles");
+    if (!vilaStyles) {
+      vilaStyles = document.createElement("link");
+      vilaStyles.id = "openvila-vila-styles";
+      vilaStyles.rel = "stylesheet";
+      vilaStyles.href = apiBase + "/openvila/widget.css";
+      (document.head || document.body).appendChild(vilaStyles);
+    }
+
+    vilaSprite = document.createElement("span");
+    vilaSprite.className = "openvila-vila-sprite";
+    vilaSprite.style.display = "block";
+    vilaSprite.style.width = String(vilaWidth) + "px";
+    vilaSprite.style.height = String(vilaHeight) + "px";
+    vilaSprite.style.backgroundImage = "url(" + JSON.stringify(spriteUrl) + ")";
+    vilaSprite.style.transform = "translateX(" + String(widgetConfig.vilaOffsetX) + "px)";
+    vilaSprite.style.pointerEvents = "none";
+    button.innerHTML = "";
+    button.appendChild(vilaSprite);
+    button.appendChild(unreadSupportIndicator);
+    button.style.width = String(vilaWidth) + "px";
+    button.style.height = String(vilaHeight) + "px";
+    button.style.borderRadius = "0";
+    button.style.background = "transparent";
+    button.style.boxShadow = "none";
+    button.style.overflow = "visible";
+    launcherHeight = vilaHeight;
+    panel.style.bottom = String(20 + launcherHeight + 12) + "px";
+    setDefaultVilaState();
   }
 
-  if (typeof window.addEventListener === "function") {
-    window.addEventListener("scroll", updateScrollTopButton, { passive: true });
+  async function loadActiveVila() {
+    try {
+      var res = await fetch(apiBase + "/openvila/vila", { method: "GET" });
+      if (!res.ok) return;
+      var vila = await res.json().catch(function () {
+        return {};
+      });
+      if (vila && vila.active === true && vila.spritesheet_url) {
+        activateVila(vila);
+      }
+    } catch (error) {}
   }
-  updateScrollTopButton();
 
   function append(role, text, options) {
     var messageOptions = options || {};
@@ -516,6 +538,7 @@
     renderedClientMessageIds = Object.create(null);
     streamingMessageViews = Object.create(null);
     setWaitingForReply(false);
+    setDefaultVilaState();
     openChatEvents();
     refreshChatHistory();
   }
@@ -539,17 +562,33 @@
     if (!hasSavedHandoffSession() && panel.style.display === "none") {
       closeChatEvents();
     }
+    if (panel.style.display === "none") {
+      setVilaState("idle");
+    } else if (active === true) {
+      setWaitingForReply(false);
+    } else if (!waitingForReply) {
+      setDefaultVilaState();
+    }
   }
 
   function completeReplyWait(item, role) {
     var replyTime = Date.parse(String(item.ts || ""));
+    if ((role === "assistant" || role === "support") && panel.style.display === "block") {
+      setVilaState("waiting");
+    }
+    var completesReply = role === "support" || (role === "assistant" && !hasSavedHandoffSession());
     if (
       waitingForReply &&
-      (role === "assistant" || role === "support") &&
+      completesReply &&
       Number.isFinite(replyTime) &&
       replyTime >= replyWaitStartedAt
     ) {
       setWaitingForReply(false);
+      if (panel.style.display === "block") {
+        setVilaState("waiting");
+      } else {
+        setVilaState("idle");
+      }
     }
   }
 
@@ -602,6 +641,14 @@
         setHandoffActive(payload.active, payload.updated_at);
       } catch (error) {}
     });
+    source.addEventListener("vila", function (event) {
+      try {
+        var payload = JSON.parse(String(event.data || "{}"));
+        if (payload.state === "failed") {
+          setVilaState(panel.style.display === "block" ? "failed" : "idle");
+        }
+      } catch (error) {}
+    });
     source.addEventListener("error", function () {
       if (source.readyState === window.EventSource.CLOSED && chatEvents === source) {
         chatEvents = null;
@@ -641,6 +688,14 @@
     }
   }
 
+  function queueHandoffMessage(message, identity, clientMessageId) {
+    var queued = handoffMessageQueue.then(function () {
+      return submitChatMessage(message, identity, clientMessageId);
+    });
+    handoffMessageQueue = queued.catch(function () {});
+    return queued;
+  }
+
   async function submitChatCommand(command, identity) {
     var res = await fetch(apiBase + CHAT_API_PATH + "/" + command, {
       method: "POST",
@@ -664,7 +719,7 @@
 
   function hidePanel() {
     panel.style.display = "none";
-    updateScrollTopButton();
+    setVilaState("idle");
     if (!hasSavedHandoffSession()) {
       closeChatEvents();
     }
@@ -674,10 +729,10 @@
     if (event && event.isTrusted === false) return;
 
     panel.style.display = panel.style.display === "none" ? "block" : "none";
-    updateScrollTopButton();
     if (panel.style.display === "block") {
       chatIdentity = chatIdentity || getOrCreateIdentity();
       markSupportRepliesRead();
+      setVilaState("waiting");
       scrollMessagesToBottom();
       openChatEvents();
       refreshChatHistory();
@@ -691,6 +746,12 @@
   });
 
   var chatIdentity = null;
+
+  panel.querySelector("#openvila-input").addEventListener("input", function () {
+    if (panel.style.display === "block" && !waitingForReply) {
+      setVilaState("waiting");
+    }
+  });
 
   panel.querySelector("#openvila-form").addEventListener("submit", async function (e) {
     e.preventDefault();
@@ -707,6 +768,7 @@
 
     if (command === "/reset" || command === "/human") {
       setWaitingForReply(true);
+      setRunningVilaState();
       input.value = "";
       try {
         var result = await submitChatCommand(command.slice(1), chatIdentity);
@@ -714,16 +776,24 @@
           startNewChatSession();
         } else if (result.already_requested) {
           setWaitingForReply(false);
+          setVilaState("waiting");
         }
       } catch (err) {
         setWaitingForReply(false);
+        setVilaState(panel.style.display === "block" ? "failed" : "idle");
         var commandChinese = VISITOR_LOCALE.toLowerCase().startsWith("zh");
         append(commandChinese ? "系统" : "System", (commandChinese ? "请求失败：" : "Request failed: ") + err.message, { ts: new Date().toISOString() });
       }
       return;
     }
 
-    setWaitingForReply(true);
+    var humanHandoff = hasSavedHandoffSession();
+    if (humanHandoff) {
+      setRunningVilaState();
+    } else {
+      setWaitingForReply(true);
+      setRunningVilaState();
+    }
     input.value = "";
     var clientMessageId = generateId("message");
     appendChatMessage({
@@ -735,16 +805,23 @@
     });
 
     try {
-      await submitChatMessage(text, chatIdentity, clientMessageId);
+      if (humanHandoff) {
+        await queueHandoffMessage(text, chatIdentity, clientMessageId);
+      } else {
+        await submitChatMessage(text, chatIdentity, clientMessageId);
+      }
     } catch (err) {
-      setWaitingForReply(false);
+      if (!humanHandoff) {
+        setWaitingForReply(false);
+      }
+      setVilaState(panel.style.display === "block" ? "failed" : "idle");
       var chinese = VISITOR_LOCALE.toLowerCase().startsWith("zh");
       append(chinese ? "系统" : "System", (chinese ? "请求失败：" : "Request failed: ") + err.message, { ts: new Date().toISOString() });
     }
   });
 
   document.body.appendChild(panel);
-  document.body.appendChild(floatingActions);
+  document.body.appendChild(button);
 
   var savedHandoffSessionId = readStorage(window.localStorage, HANDOFF_SESSION_ID_KEY);
   if (savedHandoffSessionId) {
@@ -752,6 +829,8 @@
     openChatEvents();
     refreshChatHistory();
   }
+
+  loadActiveVila();
 
   async function refreshChatHistory() {
     try {

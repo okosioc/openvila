@@ -69,7 +69,9 @@ node src/index.js run
 /ui
 /scan [--yes] [--dry-run] [--reset] [--no-filesystem] [--no-db] [--no-remote]
 /vila list
-/vila install demo --file ./demo-vila.json
+/vila install https://petdex.dev/pets/<slug>
+/vila disable
+/vila delete <slug>
 /skill list
 /skill add search
 /skill edit search
@@ -280,9 +282,9 @@ For a local website on another port, load the script from `/run` directly:
 <script src="http://127.0.0.1:9394/openvila/widget.js?color=%230f766e" defer></script>
 ```
 
-By default, the Widget uses the script URL origin as its chat API destination, so `host` and `port` query parameters are unnecessary. Use `data-host`, `data-port`, or the matching query parameters only to override that destination. Set the launcher and Send button background with `data-color` or `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue. Set `data-user` to an optional visitor label rendered by your website, such as `id=42, Alice`; it is shown only in the first human-takeover notification and is not a trusted identity. `/run` allows CORS only when the website and OpenVila service use the same hostname on different ports, including local loopback aliases such as `localhost` and `127.0.0.1`.
+By default, the Widget uses the script URL origin as its chat API destination, so `host` and `port` query parameters are unnecessary. Use `data-host`, `data-port`, or the matching query parameters only to override that destination. Set the launcher and Send button background with `data-color` or `color=%230f766e`; without either setting, the launcher uses the default blue gradient and Send uses blue. Set `vila-size=1` to render an active Vila at its native `192×208` size; the default is `0.5` (`96×104`) and the supported range is `0.25` to `1`. Use the query-only `vila-offset-x=-24` to shift the rendered Vila left or right in pixels; negative values move left. Set `data-user` to an optional visitor label rendered by your website, such as `id=42, Alice`; it is shown only in the first human-takeover notification and is not a trusted identity. `/run` allows CORS only when the website and OpenVila service use the same hostname on different ports, including local loopback aliases such as `localhost` and `127.0.0.1`.
 
-The launcher and its optional page-top button are a single floating group. Use `side=left` or `side=right` (default) and `bottom=0` to `bottom=480` (default `20`) to avoid an existing site floating control; use the corresponding `data-side` and `data-bottom` attributes if preferred. The page-top button is enabled by default, appears above the launcher after the page scrolls down, and has a white background. It hides while the chat panel is open. Set `scroll_top=0` or `data-scroll-top="0"` to disable it.
+Use `side=left` or `side=right` (default) to choose the launcher position; it remains `20px` from the selected side and bottom edge.
 
 For an HTTPS website, browsers block a direct `http://<host>:9394/...` script as mixed content. `/run` serves HTTP only, so expose it through your HTTPS reverse proxy and use a same-origin script URL:
 
@@ -396,6 +398,31 @@ run:
 - A task is scheduled again only after it finishes. If it runs across its next daily occurrence, that missed occurrence is not queued; the next future configured time is used instead.
 - Task starts, completions, and failures are written to `.openvila/logs/debug-YYYY-MM-DD.log`. A failed task does not block later tasks or its next daily run.
 - On `Ctrl+C` or `SIGTERM`, `/run` clears future timers and waits for a running scheduled task to finish before closing. A stopped or restarted process does not persist or catch up missed tasks: it simply calculates the next future `at` time from the restart time.
+
+## Vilas
+
+Install a Codex-compatible Vila from a Petdex pet page. OpenVila downloads the pet metadata and spritesheet into `.openvila/vilas/<slug>/`, then activates it in `.openvila/config.yaml`.
+
+```bash
+openvila vila install https://petdex.dev/pets/arcueid-dress
+openvila vila list
+openvila vila disable
+openvila vila delete arcueid-dress
+```
+
+When a Vila is active, the widget launcher uses its Codex-compatible 9-row × 8-column spritesheet. WebP spritesheets must be exactly `1536×1872` pixels (`192×208` per cell); OpenVila rejects an incompatible WebP during installation. See the [Codex animation row reference](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/animation-rows.md) for the atlas layout.
+
+Current Widget states:
+
+| Condition | Vila state |
+| --- | --- |
+| Chat panel is closed | `idle` |
+| Chat panel opens or the visitor types | `waiting` |
+| The visitor sends a message | randomly `running-left`, `running-right`, or `jumping` |
+| Vila or human support replies | `waiting` |
+| A request fails while the panel is open | `failed` |
+
+`idle` uses atlas row 0; `running-right` row 1; `running-left` row 2; `jumping` row 4; `failed` row 5; and `waiting` row 6. `running-left`, `running-right`, and `jumping` loop continuously. `idle`, `waiting`, and `failed` hold their final frame for 5 seconds before looping. Human handoff only changes message delivery: visitor messages stay enabled and are submitted in order; it does not introduce a separate Vila animation state.
 
 ## Runtime Directory
 

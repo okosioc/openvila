@@ -13,7 +13,7 @@ import { chatCompletion, chatCompletionStream, extractJsonObject } from "./llm.j
 import { loadDocContents, loadKnowledgeIndex } from "./knowledge.js";
 import { executeSkillCall, listSkills, normalizeSkillCalls } from "./skill.js";
 import { writeGlobalLog } from "./logging.js";
-import { ensureRuntime, runtimePaths } from "./runtime.js";
+import { ensureRuntime, loadConfig, runtimePaths } from "./runtime.js";
 import { exists, readTextSafe } from "../utils/fs.js";
 import { cliVersion } from "../utils/version.js";
 
@@ -32,6 +32,14 @@ function sendText(res, statusCode, text, contentType = "text/plain; charset=utf-
     "Content-Length": Buffer.byteLength(text),
   });
   res.end(text);
+}
+
+function sendBinary(res, content, contentType) {
+  res.writeHead(200, {
+    "Content-Type": contentType,
+    "Content-Length": content.length,
+  });
+  res.end(content);
 }
 
 function openSseStream(res) {
@@ -117,6 +125,39 @@ const CHAT_LLM_MAX_TOKENS = 4096;
 const chatWriteQueues = new Map();
 const chatProcessQueues = new Map();
 const MAX_LOG_FIELD_LENGTH = 260;
+const VILA_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const VILA_SPRITESHEET_PATTERN = /^spritesheet\.(?:png|webp)$/;
+
+async function activeVila(cwd, paths) {
+  const currentConfig = await loadConfig(cwd);
+  const id = String(currentConfig.vila?.active || "");
+  if (!VILA_ID_PATTERN.test(id)) {
+    return null;
+  }
+
+  let pet;
+  try {
+    pet = JSON.parse((await readTextSafe(path.join(paths.vilas, id, "pet.json"))) || "");
+  } catch {
+    return null;
+  }
+
+  const spritesheetPath = String(pet?.spritesheetPath || "");
+  if (!VILA_SPRITESHEET_PATTERN.test(spritesheetPath)) {
+    return null;
+  }
+
+  const imagePath = path.join(paths.vilas, id, spritesheetPath);
+  if (!(await exists(imagePath))) {
+    return null;
+  }
+
+  return {
+    id,
+    spritesheet_path: spritesheetPath,
+    image_path: imagePath,
+  };
+}
 
 function oneLine(value) {
   return String(value ?? "")
@@ -1439,6 +1480,7 @@ export async function startChatService(cwd, config, options = {}) {
         writeGlobalLog(
           `[chat] message processing failed\nsession_id: ${sanitizeLogField(identity.session_id)}\nerror: ${sanitizeLogField(error.message)}`,
         );
+        publishChatEvent(identity.session_id, "vila", { state: "failed" });
         await appendAssistantReply(identity, `Service temporarily unavailable: ${error.message}`, {
           req,
           route,
@@ -1510,6 +1552,41 @@ export async function startChatService(cwd, config, options = {}) {
         }
         const js = await fs.readFile(paths.widgetScript, "utf8");
         sendText(res, 200, js, "application/javascript; charset=utf-8");
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/openvila/widget.css") {
+        if (!(await exists(paths.widgetStyle))) {
+          sendText(res, 404, "Widget stylesheet not found. Run /run first.\n");
+          return;
+        }
+        const css = await fs.readFile(paths.widgetStyle, "utf8");
+        sendText(res, 200, css, "text/css; charset=utf-8");
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/openvila/vila") {
+        const vila = await activeVila(cwd, paths);
+        if (!vila) {
+          sendJson(res, 200, { active: false });
+          return;
+        }
+        sendJson(res, 200, {
+          active: true,
+          spritesheet_url: `/openvila/vilas/${vila.id}/${vila.spritesheet_path}`,
+        });
+        return;
+      }
+
+      const vilaSpriteMatch = url.pathname.match(/^\/openvila\/vilas\/([a-z0-9]+(?:-[a-z0-9]+)*)\/(spritesheet\.(?:png|webp))$/);
+      if (req.method === "GET" && vilaSpriteMatch) {
+        const vila = await activeVila(cwd, paths);
+        if (!vila || vila.id !== vilaSpriteMatch[1] || vila.spritesheet_path !== vilaSpriteMatch[2]) {
+          sendJson(res, 404, { error: "Vila spritesheet not found" });
+          return;
+        }
+        const image = await fs.readFile(vila.image_path);
+        sendBinary(res, image, vila.spritesheet_path.endsWith(".png") ? "image/png" : "image/webp");
         return;
       }
 

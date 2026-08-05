@@ -1,0 +1,88 @@
+#openvila-launcher .openvila-vila-sprite {
+  background-repeat: no-repeat;
+  background-size: 800% 900%;
+  filter: drop-shadow(0 4px 6px rgba(15, 23, 42, 0.28));
+}
+
+#openvila-launcher[data-vila-state="idle"] .openvila-vila-sprite {
+  animation: openvila-vila-idle 6100ms linear infinite;
+}
+
+#openvila-launcher[data-vila-state="waiting"] .openvila-vila-sprite {
+  animation: openvila-vila-waiting 6010ms linear infinite;
+}
+
+#openvila-launcher[data-vila-state="running-right"] .openvila-vila-sprite {
+  animation: openvila-vila-running-right 1060ms linear infinite;
+}
+
+#openvila-launcher[data-vila-state="running-left"] .openvila-vila-sprite {
+  animation: openvila-vila-running-left 1060ms linear infinite;
+}
+
+#openvila-launcher[data-vila-state="jumping"] .openvila-vila-sprite {
+  animation: openvila-vila-jumping 840ms linear infinite;
+}
+
+#openvila-launcher[data-vila-state="failed"] .openvila-vila-sprite {
+  animation: openvila-vila-failed 6220ms linear infinite;
+}
+
+@keyframes openvila-vila-idle {
+  0% { background-position: 0% 0%; animation-timing-function: step-end; }
+  4.590164% { background-position: 14.285714% 0%; animation-timing-function: step-end; }
+  6.393443% { background-position: 28.571429% 0%; animation-timing-function: step-end; }
+  8.196721% { background-position: 42.857143% 0%; animation-timing-function: step-end; }
+  10.491803% { background-position: 57.142857% 0%; animation-timing-function: step-end; }
+  12.786885%, 100% { background-position: 71.428571% 0%; }
+}
+
+@keyframes openvila-vila-running-right {
+  0% { background-position: 0% 12.5%; animation-timing-function: step-end; }
+  11.320755% { background-position: 14.285714% 12.5%; animation-timing-function: step-end; }
+  22.641509% { background-position: 28.571429% 12.5%; animation-timing-function: step-end; }
+  33.962264% { background-position: 42.857143% 12.5%; animation-timing-function: step-end; }
+  45.283019% { background-position: 57.142857% 12.5%; animation-timing-function: step-end; }
+  56.603774% { background-position: 71.428571% 12.5%; animation-timing-function: step-end; }
+  67.924528% { background-position: 85.714286% 12.5%; animation-timing-function: step-end; }
+  79.245283%, 100% { background-position: 100% 12.5%; }
+}
+
+@keyframes openvila-vila-running-left {
+  0% { background-position: 0% 25%; animation-timing-function: step-end; }
+  11.320755% { background-position: 14.285714% 25%; animation-timing-function: step-end; }
+  22.641509% { background-position: 28.571429% 25%; animation-timing-function: step-end; }
+  33.962264% { background-position: 42.857143% 25%; animation-timing-function: step-end; }
+  45.283019% { background-position: 57.142857% 25%; animation-timing-function: step-end; }
+  56.603774% { background-position: 71.428571% 25%; animation-timing-function: step-end; }
+  67.924528% { background-position: 85.714286% 25%; animation-timing-function: step-end; }
+  79.245283%, 100% { background-position: 100% 25%; }
+}
+
+@keyframes openvila-vila-jumping {
+  0% { background-position: 0% 50%; animation-timing-function: step-end; }
+  16.666667% { background-position: 14.285714% 50%; animation-timing-function: step-end; }
+  33.333333% { background-position: 28.571429% 50%; animation-timing-function: step-end; }
+  50% { background-position: 42.857143% 50%; animation-timing-function: step-end; }
+  66.666667%, 100% { background-position: 57.142857% 50%; }
+}
+
+@keyframes openvila-vila-failed {
+  0% { background-position: 0% 62.5%; animation-timing-function: step-end; }
+  2.250804% { background-position: 14.285714% 62.5%; animation-timing-function: step-end; }
+  4.501608% { background-position: 28.571429% 62.5%; animation-timing-function: step-end; }
+  6.752412% { background-position: 42.857143% 62.5%; animation-timing-function: step-end; }
+  9.003215% { background-position: 57.142857% 62.5%; animation-timing-function: step-end; }
+  11.254019% { background-position: 71.428571% 62.5%; animation-timing-function: step-end; }
+  13.504823% { background-position: 85.714286% 62.5%; animation-timing-function: step-end; }
+  15.755627%, 100% { background-position: 100% 62.5%; }
+}
+
+@keyframes openvila-vila-waiting {
+  0% { background-position: 0% 75%; animation-timing-function: step-end; }
+  2.495840% { background-position: 14.285714% 75%; animation-timing-function: step-end; }
+  4.991681% { background-position: 28.571429% 75%; animation-timing-function: step-end; }
+  7.487521% { background-position: 42.857143% 75%; animation-timing-function: step-end; }
+  9.983361% { background-position: 57.142857% 75%; animation-timing-function: step-end; }
+  12.479201%, 100% { background-position: 71.428571% 75%; }
+}

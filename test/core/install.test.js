@@ -15,6 +15,9 @@ test("ensureWidgetPreview refreshes preview assets on every run", async () => {
     await ensureWidgetPreview(cwd);
     assert.match(await fs.readFile(paths.widget, "utf8"), /OpenVila Widget Preview/);
     assert.match(await fs.readFile(paths.widgetScript, "utf8"), /openvila-launcher/);
+    assert.match(await fs.readFile(paths.widgetStyle, "utf8"), /@keyframes openvila-vila-idle/);
+    assert.match(await fs.readFile(paths.widgetStyle, "utf8"), /openvila-vila-jumping 840ms linear infinite/);
+    assert.match(await fs.readFile(paths.widgetStyle, "utf8"), /openvila-vila-running-left 1060ms linear infinite/);
 
     await fs.writeFile(paths.widget, "custom widget preview", "utf8");
     await ensureWidgetPreview(cwd);

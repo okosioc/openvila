@@ -38,6 +38,7 @@ export function runtimePaths(cwd) {
     telegramState: path.join(base, "chats", "telegram.json"),
     widget: path.join(base, "widget.html"),
     widgetScript: path.join(base, "widget.js"),
+    widgetStyle: path.join(base, "widget.css"),
     knowledgeIndex: path.join(base, "knowledges", "index.md"),
     knowledgeManifest: path.join(base, "knowledges", "manifest.json"),
   };
@@ -66,8 +67,8 @@ export function defaultConfig() {
         en: "Hello, I'm Vila, your AI customer service assistant. I can answer questions based on this website's knowledge base. If you're not satisfied with my answer, you can ask for human support.",
       },
     },
-    marketplace: {
-      endpoint: "https://openvila.com/api/v1",
+    vila: {
+      active: "",
     },
     scan: {
       llm_candidate_limit: 420,

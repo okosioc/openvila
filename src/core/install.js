@@ -6,10 +6,12 @@ import { ensureRuntime } from "./runtime.js";
 const WIDGET_ASSET_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../widget");
 const WIDGET_HTML_ASSET = path.join(WIDGET_ASSET_DIR, "widget.html");
 const WIDGET_SCRIPT_ASSET = path.join(WIDGET_ASSET_DIR, "widget.js");
+const WIDGET_STYLE_ASSET = path.join(WIDGET_ASSET_DIR, "widget.css");
 
 async function copyWidgetAssets(paths) {
   await fs.copyFile(WIDGET_HTML_ASSET, paths.widget);
   await fs.copyFile(WIDGET_SCRIPT_ASSET, paths.widgetScript);
+  await fs.copyFile(WIDGET_STYLE_ASSET, paths.widgetStyle);
 }
 
 export async function ensureWidgetPreview(cwd) {
@@ -19,5 +21,6 @@ export async function ensureWidgetPreview(cwd) {
   return {
     preview: paths.widget,
     script: paths.widgetScript,
+    style: paths.widgetStyle,
   };
 }

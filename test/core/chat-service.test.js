@@ -8,7 +8,7 @@ import test from "node:test";
 import { startChatService } from "../../src/core/chat-service.js";
 import { ensureWidgetPreview } from "../../src/core/install.js";
 import { createRuntimeFileLogger, setGlobalLogWriter } from "../../src/core/logging.js";
-import { defaultConfig, initializeRuntime, runtimePaths } from "../../src/core/runtime.js";
+import { defaultConfig, initializeRuntime, runtimePaths, saveConfig } from "../../src/core/runtime.js";
 import { cliVersion } from "../../src/utils/version.js";
 
 function delay(milliseconds) {
@@ -229,10 +229,16 @@ async function createChatService(options = {}) {
   if (options.welcomeMessages) {
     config.chat.welcome_message = options.welcomeMessages;
   }
+  if (options.vila) {
+    config.vila.active = options.vila;
+  }
   if (options.llm) {
     config.llm.endpoint = options.llm.endpoint;
     config.llm.api_key = "test-key";
     config.llm.model = "test-model";
+  }
+  if (options.vila) {
+    await saveConfig(cwd, config);
   }
 
   if (options.knowledge) {
@@ -413,15 +419,47 @@ test("widget preview renders a direct service embed URL", async () => {
     await ensureWidgetPreview(chat.cwd);
     const response = await fetch(`${chat.baseUrl}/widget`, { headers: { Connection: "close" } });
     const preview = await response.text();
+    const stylesheet = await fetch(`${chat.baseUrl}/openvila/widget.css`, { headers: { Connection: "close" } });
     const port = new URL(chat.baseUrl).port;
     const version = (await cliVersion()).replace(/^v/, "");
     const widgetUrl = `${chat.baseUrl}/openvila/widget.js?host=127.0.0.1&amp;port=${port}&amp;color=%230f766e&amp;version=${version}`;
     const embedUrl = `${chat.baseUrl}/openvila/widget.js?color=%230f766e&amp;version=${version}`;
 
     assert.equal(response.status, 200);
+    assert.equal(stylesheet.status, 200);
+    assert.match(await stylesheet.text(), /@keyframes openvila-vila-idle/);
     assert.ok(preview.includes(`src="${widgetUrl}"`));
     assert.ok(preview.includes(`&lt;script src=&quot;${embedUrl}&quot; defer&gt;&lt;/script&gt;`));
     assert.match(preview, new RegExp(`version=${version}.*browser cache-busting parameter`));
+  } finally {
+    await chat.close();
+  }
+});
+
+test("chat service exposes the active Vila metadata and spritesheet", async () => {
+  const chat = await createChatService({ vila: "arcueid-dress" });
+
+  try {
+    const paths = runtimePaths(chat.cwd);
+    const vilaDir = path.join(paths.vilas, "arcueid-dress");
+    await fs.mkdir(vilaDir);
+    await fs.writeFile(
+      path.join(vilaDir, "pet.json"),
+      `${JSON.stringify({ id: "arcueid-dress", spritesheetPath: "spritesheet.webp" })}\n`,
+      "utf8",
+    );
+    await fs.writeFile(path.join(vilaDir, "spritesheet.webp"), Buffer.from("sprite-data"));
+
+    const metadataResponse = await fetch(`${chat.baseUrl}/openvila/vila`, { headers: { Connection: "close" } });
+    const metadata = await metadataResponse.json();
+    const spriteResponse = await fetch(`${chat.baseUrl}${metadata.spritesheet_url}`, { headers: { Connection: "close" } });
+
+    assert.deepEqual(metadata, {
+      active: true,
+      spritesheet_url: "/openvila/vilas/arcueid-dress/spritesheet.webp",
+    });
+    assert.equal(spriteResponse.headers.get("content-type"), "image/webp");
+    assert.equal(Buffer.from(await spriteResponse.arrayBuffer()).toString(), "sprite-data");
   } finally {
     await chat.close();
   }
