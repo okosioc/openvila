@@ -193,7 +193,7 @@ test("runScan applies selected scan sources and reset mode", async () => {
 
   await runScan(
     context,
-    { options: { yes: true, reset: true, "no-db": true, "no-remote": true } },
+    { options: { yes: true, reset: true, "no-filesystem": true } },
     {
       loadConfig: async () => ({ scan: {} }),
       prepareKnowledgeScanPlan: async (cwd, options) => {
@@ -214,13 +214,13 @@ test("runScan applies selected scan sources and reset mode", async () => {
   assert.equal(buildCalls.length, 1);
   assert.deepEqual(planOptions, {
     cwd: "/tmp/openvila-scan-test",
-    options: { config: { scan: {} }, skipDatabase: true, skipRemote: true, resetPlan: true },
+    options: { config: { scan: {} }, skipDatabase: false, skipFilesystem: true, skipRemote: false },
   });
   assert.deepEqual(savedPlan, { cwd: "/tmp/openvila-scan-test", scanPlan: plan });
   assert.equal(buildCalls[0].cwd, "/tmp/openvila-scan-test");
   assert.deepEqual(buildCalls[0].options.config, { scan: {} });
   assert.equal(buildCalls[0].options.plan, plan);
-  assert.deepEqual(buildCalls[0].options.selections, { filesystem: true, database: false, remote: false });
+  assert.deepEqual(buildCalls[0].options.selections, { filesystem: false, database: true, remote: true });
   assert.equal(buildCalls[0].options.reset, true);
   assert.equal(typeof buildCalls[0].options.log, "function");
   const analysisLog = context.logs.find((line) => line.includes("LLM Analysis Result"));
@@ -230,7 +230,7 @@ test("runScan applies selected scan sources and reset mode", async () => {
   assert.match(scopeSection, /database table keys \(1\):\n  sqlite:\/\/data\/site\.db::posts/);
   const summaryLog = context.logs.find((line) => line.includes("[scan] 6/6 Summary"));
   assert.doesNotMatch(summaryLog, /framework:/);
-  assert.ok(context.logs.some((line) => line.includes("knowledge_update: full rebuild (scan-plan regenerated)")));
+  assert.ok(context.logs.some((line) => line.includes("knowledge_update: full rebuild")));
 });
 
 test("runScan lets the owner edit a generated scan plan before confirming", async () => {
@@ -281,7 +281,6 @@ test("runScan lets the owner edit a generated scan plan before confirming", asyn
 
   assert.equal(prepareCalls.length, 2);
   assert.deepEqual(prepareCalls[1].options.scanPlan, { files: ["docs/**"] });
-  assert.equal(prepareCalls[1].options.resetPlan, false);
   assert.deepEqual(savedPlan.plan.generated_scan_plan, { files: ["docs/**"] });
   assert.equal(buildPlan.plan, savedPlan.plan);
   assert.ok(context.logs.some((line) => line.includes("Opening editor for scan plan")));

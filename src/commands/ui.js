@@ -21,7 +21,7 @@ function commandSuggestions(locale) {
   return [
     { cmd: "/scan", desc: pick(locale, "扫描并编译知识库", "scan and compile knowledge") },
     { cmd: "/scan --dry-run", desc: pick(locale, "预览扫描计划，不写入知识库", "preview scan plan without writing knowledge") },
-    { cmd: "/scan --reset", desc: pick(locale, "重建扫描计划并全量编译知识库", "regenerate scan plan and fully rebuild knowledge") },
+    { cmd: "/scan --reset", desc: pick(locale, "全量编译知识库", "fully rebuild knowledge") },
     { cmd: "/scan --no-db", desc: pick(locale, "跳过数据库规划和查询", "skip database planning and queries") },
     { cmd: "/scan --no-remote", desc: pick(locale, "跳过 sitemap 规划和抓取", "skip sitemap planning and crawling") },
     { cmd: "/vila list", desc: pick(locale, "查看精灵列表", "list installed vilas") },

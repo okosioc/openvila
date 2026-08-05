@@ -51,7 +51,7 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
     context,
     { options: {} },
     {
-      loadConfig: async () => ({ run: { port: 9460 } }),
+      loadConfig: async () => ({ run: { port: 9460 }, vila: { active: "arcueid-dress" } }),
       ensureWidgetPreview: async (cwd) => {
         previewCalls.push(cwd);
       },
@@ -82,7 +82,7 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
   assert.deepEqual(startCalls, [
     {
       cwd: "/tmp/openvila-run-test",
-      config: { run: { port: 9460 } },
+      config: { run: { port: 9460 }, vila: { active: "arcueid-dress" } },
       options: { port: 9460 },
     },
   ]);
@@ -90,6 +90,8 @@ test("runRun uses the configured port and closes the service on SIGTERM", async 
   assert.equal(closeCalls, 1);
   assert.equal(context.logs[0].split("\n")[0], "OpenVila v1.2.3");
   assert.ok(context.logs.some((line) => line.includes("Preview: http://127.0.0.1:9460/widget")));
+  assert.ok(context.logs.some((line) => line.includes("Active Vila: arcueid-dress")));
+  assert.ok(context.logs.every((line) => !line.includes("Chat API:")));
   assert.ok(context.logs.some((line) => line.includes("http://127.0.0.1:9460")));
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: disabled")));
   assert.ok(context.logs.some((line) => line.includes("Knowledge documents: files=4, database=0, remote=2")));
@@ -131,6 +133,7 @@ test("runRun lets the command port override the runtime configuration", async ()
 
   assert.equal(selectedPort, 9510);
   assert.equal(previewCwd, "/tmp/openvila-run-test");
+  assert.ok(context.logs.every((line) => !line.includes("Active Vila:")));
   assert.ok(context.logs.some((line) => line.includes("Telegram handoff polling: enabled")));
 });
 

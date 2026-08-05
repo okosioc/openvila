@@ -116,7 +116,7 @@ openvila run
 ### Scan
 
 `/scan` uses a human-in-loop workflow:
-1. on the first scan, or with `--reset`, LLM identifies framework and knowledge files from candidate file list
+1. on the first scan without an existing `scan-plan`, LLM identifies framework and knowledge files from candidate file list
 2. show scan scope for owner confirmation
 3. write the confirmed scope to editable `.openvila/scan-plan`; later scans reuse it without LLM source planning
 4. scan selected sources (filesystem / scan-plan database tables / optional remote pages and sitemap)
@@ -132,7 +132,7 @@ Before LLM planning, `/scan` follows root `.gitignore`, skips styles (`.css`, `.
 
 #### Scan Plan
 
-After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to regenerate and overwrite the scan plan, then fully recompile the selected knowledge sources.
+After the first confirmed scan, OpenVila writes `.openvila/scan-plan`. This plain-text file is the editable scan scope. Later `/scan` runs reuse it without LLM file/table planning, while still using LLM to compile changed sources into knowledge docs. Use `/scan --reset` to fully recompile the selected knowledge sources without changing the scan plan.
 
 Every interactive scan confirmation, including scan-plan mode, accepts `e` to edit the plan. OpenVila opens `$VISUAL`, then `$EDITOR`, or `vi`, validates the edited lines, and shows the updated scan scope for a second confirmation. The final `.openvila/scan-plan` is written only after confirmation.
 
@@ -178,7 +178,7 @@ A table (MongoDB collection) listed in the scan plan is queried on every scan, s
 Database scan behavior:
 - with `.openvila/scan-plan`, `/scan` uses plan mode and its listed tables
 - remote pages come from `http://` / `https://` scan-plan entries and/or the configured sitemap (`scan.remote_sitemap_url`, with `scan.remote_max_pages`); `--no-remote` skips both
-- without `.openvila/scan-plan`, `/scan` uses auto mode: it discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then writes the selected sources into `.openvila/scan-plan`; `--reset` forces auto mode
+- without `.openvila/scan-plan`, `/scan` uses auto mode: it discovers SQLite/MySQL/PostgreSQL/MongoDB targets + tables/collections, asks LLM to return `knowledge_tables`, then writes the selected sources into `.openvila/scan-plan`
 - optional auto knobs: `scan.db_auto_max_tables` (default `6`), `scan.db_auto_query_limit` (default `80`), `scan.db_auto_max_candidate_tables` (default `360`)
 - database access uses Node drivers (`sqlite3` / `mysql2` / `pg` / `mongodb`), no external DB CLI requirement
 - add or remove database tables by adding or removing `<connection_url>::<table>` lines; unsupported database engines and failed table queries are logged while other sources continue
@@ -213,8 +213,9 @@ For example, a `25000`-character terms page is truncated to its first `20000` ch
 
 Useful flags:
 - `--dry-run`: preview plan only, no writes
-- `--reset`: regenerate `scan-plan` with LLM and fully recompile selected knowledge sources
+- `--reset`: fully recompile selected knowledge sources without changing `scan-plan`
 - `--yes`: skip interactive confirmation and use defaults
+- `--no-filesystem`: skip filesystem planning and scanning
 - `--no-db`: skip scan-plan database tables and automatic database discovery
 - `--no-remote`: skip sitemap planning and crawling
 
@@ -424,7 +425,7 @@ Current Widget states:
 | Vila or human support replies | `waiting` |
 | A request fails while the panel is open | `failed` |
 
-See the [Codex animation row reference](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/animation-rows.md) for the atlas layout. `idle` uses atlas row 0; `running-right` row 1; `running-left` row 2; `jumping` row 4; `failed` row 5; and `waiting` row 6. `running-left`, `running-right`, and `jumping` loop continuously. `idle`, `waiting`, and `failed` hold their final frame for 5 seconds before looping. 
+See the [Animation Rows](https://github.com/openai/skills/blob/main/skills/.curated/hatch-pet/references/animation-rows.md) for the atlas layout. `idle` uses atlas row 0; `running-right` row 1; `running-left` row 2; `jumping` row 4; `failed` row 5; and `waiting` row 6. `running-left`, `running-right`, and `jumping` loop continuously. `idle`, `waiting`, and `failed` hold their final frame for 5 seconds before looping.
 
 ## Runtime Directory
 

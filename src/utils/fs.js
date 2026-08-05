@@ -128,14 +128,18 @@ export function docBaseNameNoHash(source) {
 }
 
 export function normalizeStoredPath(value, prefix) {
-  const normalized = toPosixPath(String(value || "").trim()).replace(/^\/+/, "");
-  if (!normalized) {
+  const normalizedPrefix = toPosixPath(String(prefix || "").trim()).replace(/^\/+|\/+$/g, "");
+  const rawPath = toPosixPath(String(value || "").trim()).replace(/^\/+/, "");
+  if (!normalizedPrefix || !rawPath) {
     return "";
   }
-  if (normalized.startsWith(`${prefix}/`)) {
-    return normalized;
+
+  const candidate = rawPath.startsWith(`${normalizedPrefix}/`) ? rawPath : `${normalizedPrefix}/${rawPath}`;
+  const normalized = path.posix.normalize(candidate).replace(/^\/+/, "");
+  if (!normalized.startsWith(`${normalizedPrefix}/`)) {
+    return "";
   }
-  return `${prefix}/${normalized}`;
+  return normalized;
 }
 
 export function storedPathToAbsolute(baseDir, storedPath) {

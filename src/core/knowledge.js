@@ -89,14 +89,23 @@ function docPrefixByOrigin(origin) {
 }
 
 function parseDbSourceParts(source) {
-  const matched = /^db:([^:]+):([^:]+):(.+)$/.exec(String(source || "").trim());
-  if (!matched) {
+  const parts = String(source || "").trim().split(":");
+  if (parts[0] !== "db" || parts.length < 4) {
     return null;
   }
+  if (parts.length >= 5) {
+    return {
+      engine: parts[1],
+      target: parts[2],
+      table: parts[3],
+      id: parts.slice(4).join(":"),
+    };
+  }
   return {
-    engine: matched[1],
-    table: matched[2],
-    id: matched[3],
+    engine: parts[1],
+    target: "",
+    table: parts[2],
+    id: parts.slice(3).join(":"),
   };
 }
 
@@ -107,9 +116,12 @@ function docStoredPathForDoc(doc) {
     const dbParts = parseDbSourceParts(source);
     if (dbParts) {
       const engine = sanitizeDocNamePart(dbParts.engine, "db", 20);
+      const target = sanitizeDocNamePart(dbParts.target, "target", 20);
       const table = sanitizeDocNamePart(dbParts.table, "table", 56);
       const id = sanitizeDocNamePart(dbParts.id, "id", 56);
-      return `docs/db_${engine}_${table}_${id}.md`;
+      return dbParts.target
+        ? `docs/db_${engine}_${target}_${table}_${id}.md`
+        : `docs/db_${engine}_${table}_${id}.md`;
     }
     const fallbackId = sanitizeDocNamePart(source.replace(/^db:/i, ""), "id", 72);
     return `docs/db_unknown_table_${fallbackId}.md`;
@@ -126,7 +138,7 @@ function docStoredPathForDoc(doc) {
 function sourceHashForDoc(doc) {
   return crypto
     .createHash("sha1")
-    .update(`${doc.origin}\n${doc.source}\n${doc.hash_content ?? doc.content}`)
+    .update(`${doc.origin}\n${doc.source}\n${doc.content}`)
     .digest("hex");
 }
 
@@ -311,10 +323,11 @@ export async function prepareKnowledgeScanPlan(cwd, options = {}) {
     }).catch(() => ({})));
 
   const skipDatabase = Boolean(options.skipDatabase);
+  const skipFilesystem = Boolean(options.skipFilesystem);
   const skipRemote = Boolean(options.skipRemote);
   const scanPlanOverride = options.scanPlan;
-  const scanPlan = options.resetPlan ? null : scanPlanOverride || (await loadKnowledgeScanPlan(cwd));
-  const relatives = await collectFilesystemCandidates(cwd, config);
+  const scanPlan = scanPlanOverride || (await loadKnowledgeScanPlan(cwd));
+  const relatives = skipFilesystem ? [] : await collectFilesystemCandidates(cwd, config);
 
   if (scanPlan) {
     const database = skipDatabase ? emptyDatabasePlan() : databasePlanFromScanPlan(cwd, config, scanPlan);
@@ -483,11 +496,20 @@ async function ensureKnowledgeFolder(paths) {
   await fs.mkdir(paths.knowledgeDocs, { recursive: true });
 }
 
-async function collectFilesystemDocs(cwd, matchedPaths, contentChars) {
+async function collectFilesystemDocs(cwd, matchedPaths, contentChars, log = () => undefined) {
   const docs = [];
+  const warnings = [];
   for (const relative of matchedPaths) {
     const fullPath = path.join(cwd, relative);
-    const content = await readTextSafe(fullPath);
+    let content;
+    try {
+      content = await fs.readFile(fullPath, "utf8");
+    } catch (error) {
+      const message = `file read failed (${relative}): ${error.message}`;
+      warnings.push(message);
+      log(message);
+      continue;
+    }
     if (!content || !content.trim()) {
       continue;
     }
@@ -501,7 +523,7 @@ async function collectFilesystemDocs(cwd, matchedPaths, contentChars) {
       content: cleaned,
     });
   }
-  return docs;
+  return { docs, warnings };
 }
 
 async function collectDatabaseDocs(cwd, databasePlan, contentChars, log = () => undefined) {
@@ -540,16 +562,17 @@ async function collectDatabaseDocs(cwd, databasePlan, contentChars, log = () => 
         limit: queryItem.limit,
       });
       const engineToken = sanitizeDocNamePart(queryItem.engine || target.engine || "db", "db", 20);
-      const tableName = String(queryItem.table_name || queryItem.name || "table").trim();
+      const targetToken = crypto.createHash("sha1").update(String(target.key || target.connection_url || "")).digest("hex").slice(0, 12);
+      const tableName = String(queryItem.table_name || "table").trim();
       const tableToken = sanitizeDocNamePart(tableName, "table", 56);
       for (let i = 0; i < rows.length && i < queryItem.limit; i += 1) {
         const row = rows[i];
         const rowIdRaw = pickRowId(row, i + 1);
         let rowIdToken = sanitizeDocNamePart(rowIdRaw, String(i + 1), 56);
-        let source = `db:${engineToken}:${tableToken}:${rowIdToken}`;
+        let source = `db:${engineToken}:${targetToken}:${tableToken}:${rowIdToken}`;
         if (usedSources.has(source)) {
           rowIdToken = sanitizeDocNamePart(`${rowIdToken}_${i + 1}`, String(i + 1), 56);
-          source = `db:${engineToken}:${tableToken}:${rowIdToken}`;
+          source = `db:${engineToken}:${targetToken}:${tableToken}:${rowIdToken}`;
         }
         usedSources.add(source);
         const text = cleanTextForPrompt(stringifyDbRow(row), contentChars);
@@ -561,21 +584,23 @@ async function collectDatabaseDocs(cwd, databasePlan, contentChars, log = () => 
         });
       }
     } catch (error) {
-      const message = `database query failed (${queryItem.name}): ${error.message}`;
+      const tableKey = String(queryItem.table_key || `${queryItem.target?.key || "database"}::${queryItem.table_name || "table"}`).trim();
+      const message = `database query failed (${tableKey}): ${error.message}`;
       warnings.push(message);
       log(message);
     }
   }
 
-  return { docs, warnings };
+  return { docs, warnings, failed: warnings.length > 0 };
 }
 
 async function collectRemoteDocs(remotePlan, log, contentChars) {
   if (!remotePlan.enabled) {
-    return { docs: [], warnings: [] };
+    return { docs: [], warnings: [], failed: false };
   }
 
   const warnings = [];
+  let failed = false;
   const docs = [];
   const plannedUrls = unique((remotePlan.urls || []).map((url) => String(url || "").trim()));
   let sitemapUrls = [];
@@ -585,6 +610,7 @@ async function collectRemoteDocs(remotePlan, log, contentChars) {
       const sitemapText = await fetchText(remotePlan.sitemap_url, 15000);
       sitemapUrls = parseSitemapLocs(sitemapText).slice(0, remotePlan.max_pages);
     } catch (error) {
+      failed = true;
       warnings.push(`sitemap fetch failed: ${error.message}`);
       if (typeof log === "function") {
         log(`sitemap fetch failed: ${error.message}`);
@@ -606,6 +632,7 @@ async function collectRemoteDocs(remotePlan, log, contentChars) {
         content: text,
       });
     } catch (error) {
+      failed = true;
       warnings.push(`remote page failed (${url}): ${error.message}`);
       if (typeof log === "function") {
         log(`remote page failed (${url}): ${error.message}`);
@@ -613,7 +640,7 @@ async function collectRemoteDocs(remotePlan, log, contentChars) {
     }
   }
 
-  return { docs, warnings };
+  return { docs, warnings, failed };
 }
 
 function intRange(value, min, max, fallback) {
@@ -947,7 +974,6 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     options.plan ||
     (await prepareKnowledgeScanPlan(cwd, {
       config,
-      resetPlan: Boolean(options.reset),
     }));
   const selections = defaultSelections(plan, options.selections || {});
   const log = typeof options.log === "function" ? options.log : () => undefined;
@@ -962,15 +988,20 @@ export async function buildKnowledgeBase(cwd, options = {}) {
 
   const docs = [];
   const warnings = [];
+  const unavailableOrigins = new Set();
   let scannedFiles = 0;
   let scannedDbRows = 0;
   let scannedRemotePages = 0;
 
   if (selections.filesystem) {
     log(t(locale, "扫描文件系统中...", "Scanning file system..."));
-    const fsDocs = await collectFilesystemDocs(cwd, plan.filesystem.matched_paths, compileSettings.docContentChars);
-    docs.push(...fsDocs);
-    scannedFiles = fsDocs.length;
+    const fsResult = await collectFilesystemDocs(cwd, plan.filesystem.matched_paths, compileSettings.docContentChars, log);
+    docs.push(...fsResult.docs);
+    warnings.push(...fsResult.warnings);
+    scannedFiles = fsResult.docs.length;
+    if (fsResult.warnings.length > 0) {
+      unavailableOrigins.add("filesystem");
+    }
   }
 
   if (selections.database) {
@@ -979,6 +1010,9 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     docs.push(...dbResult.docs);
     warnings.push(...dbResult.warnings);
     scannedDbRows = dbResult.docs.length;
+    if (dbResult.failed) {
+      unavailableOrigins.add("database");
+    }
   }
 
   if (selections.remote) {
@@ -987,10 +1021,9 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     docs.push(...remoteResult.docs);
     warnings.push(...remoteResult.warnings);
     scannedRemotePages = remoteResult.docs.length;
-  }
-
-  if (docs.length === 0) {
-    throw new Error("No documents collected from selected scan sources.");
+    if (remoteResult.failed) {
+      unavailableOrigins.add("remote");
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -1016,6 +1049,23 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   const addedSources = [];
   const changedSources = [];
   const unchangedSources = [];
+  const preservedSources = [];
+
+  for (const source of previousSourceSet) {
+    if (currentDocMap.has(source) || !unavailableOrigins.has(normalizeOrigin("", source))) {
+      continue;
+    }
+    if (!previousSourceHashes[source] || !previousSourceDocMap[source] || !previousIndexMap[source]) {
+      continue;
+    }
+    currentSourceHashes[source] = previousSourceHashes[source];
+    currentSourceDocMap[source] = previousSourceDocMap[source];
+    preservedSources.push(source);
+  }
+
+  if (docs.length === 0 && preservedSources.length === 0) {
+    throw new Error("No documents collected from selected scan sources.");
+  }
 
   for (const doc of docs) {
     const source = doc.source;
@@ -1039,10 +1089,19 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       continue;
     }
 
+    const storedDocPath = normalizeStoredPath(currentDocPath, "docs");
+    const compiledDoc = storedDocPath
+      ? await readTextSafe(storedPathToAbsolute(paths.knowledges, storedDocPath))
+      : null;
+    if (compiledDoc === null) {
+      changedSources.push(source);
+      continue;
+    }
+
     unchangedSources.push(source);
   }
 
-  const deletedSources = [...previousSourceSet].filter((source) => !currentDocMap.has(source));
+  const deletedSources = [...previousSourceSet].filter((source) => !Object.hasOwn(currentSourceHashes, source));
   const compileSources = [...addedSources, ...changedSources];
 
   const compileDocsMap = new Map(compileSources.map((source) => [source, currentDocMap.get(source)]).filter(([, doc]) => Boolean(doc)));
@@ -1134,6 +1193,14 @@ export async function buildKnowledgeBase(cwd, options = {}) {
     throw new Error(`Missing compiled metadata for source: ${source}`);
   }
 
+  for (const source of preservedSources) {
+    finalIndexMap[source] = {
+      ...previousIndexMap[source],
+      doc_path: currentSourceDocMap[source],
+      is_frequently_asked: parseBooleanLike(previousIndexMap[source].is_frequently_asked),
+    };
+  }
+
   await writeCompiledDocs(
     paths,
     new Map(
@@ -1150,7 +1217,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
   const addedCount = addedSources.length;
   const changedCount = changedSources.length;
   const deletedCount = deletedSources.length;
-  const unchangedCount = unchangedSources.length;
+  const unchangedCount = unchangedSources.length + preservedSources.length;
 
   log(
     t(
@@ -1183,7 +1250,7 @@ export async function buildKnowledgeBase(cwd, options = {}) {
       database: scannedDbRows,
       remote: scannedRemotePages,
     },
-    total_files: docs.length,
+    total_files: Object.keys(finalIndexMap).length,
     changes: {
       added: addedCount,
       changed: changedCount,

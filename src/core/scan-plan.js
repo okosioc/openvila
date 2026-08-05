@@ -55,26 +55,6 @@ function clampInt(value, min, max, fallback) {
   return Math.max(min, Math.min(Math.floor(parsed), max));
 }
 
-function sanitizeNamePart(value, maxLen = 24) {
-  return (
-    String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, maxLen)
-  );
-}
-
-function sanitizeQueryName(value) {
-  return (
-    String(value || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9_]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 96) || "scan_query"
-  );
-}
-
 async function loadGitignoreMatcher(cwd) {
   const content = await readTextSafe(path.join(cwd, ".gitignore"));
   if (content === null) {
@@ -221,37 +201,6 @@ export function expandScanPlanFiles(candidatePaths, scanPlan) {
   return candidatePaths.filter((candidatePath) => patterns.some((pattern) => pattern.test(candidatePath)));
 }
 
-function queryTargetBase(target, engine) {
-  if (engine === "sqlite") {
-    const sqlitePath = String(target?.sqlite_path || target?.db_path || "").trim();
-    const base = sqlitePath ? path.basename(sqlitePath).replace(/\.[^.]+$/, "") : "";
-    return sanitizeNamePart(base, 28) || "sqlite";
-  }
-
-  let host = "";
-  let port = "";
-  let database = "";
-  const connectionUrl = String(target?.connection_url || "").trim();
-  if (connectionUrl) {
-    try {
-      const parsed = new URL(connectionUrl);
-      host = parsed.hostname || "";
-      port = parsed.port || "";
-      database = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
-    } catch {}
-  }
-
-  host = host || String(target?.host || "").trim();
-  port = port || String(target?.port || "").trim();
-  database = database || String(target?.database || "").trim();
-  const parts = [
-    sanitizeNamePart(host, 22),
-    port ? sanitizeNamePart(`p${port}`, 10) : "",
-    sanitizeNamePart(database, 22),
-  ].filter(Boolean);
-  return parts.join("_") || engine;
-}
-
 function scanPlanDatabaseEntries(scanPlan) {
   const entries = [];
   if (scanPlan?.database && typeof scanPlan.database === "object" && !Array.isArray(scanPlan.database)) {
@@ -305,14 +254,13 @@ export function databasePlanFromScanPlan(cwd, config, scanPlan) {
     const limit = clampInt(config?.scan?.db_auto_query_limit, 1, 300, 80);
     const tableNames = unique(toArray(entry.tables).map((tableName) => String(tableName || "").trim()));
     for (const tableName of tableNames) {
-      const targetBase = queryTargetBase(target, target.engine);
-      const name = sanitizeQueryName(`plan_${target.engine}_${targetBase}_${tableName}`);
+      const tableKey = `${target.key}::${tableName}`;
       const query =
         target.engine === "mongodb"
           ? JSON.stringify({ collection: tableName, filter: {}, sort: { _id: -1 }, limit })
           : `SELECT * FROM ${quoteDatabaseIdentifier(target.engine, tableName)} LIMIT ${limit}`;
       queries.push({
-        name,
+        table_key: tableKey,
         engine: target.engine,
         target,
         target_label: target.label,
@@ -320,7 +268,7 @@ export function databasePlanFromScanPlan(cwd, config, scanPlan) {
         query,
         limit,
       });
-      selectedTableKeys.push(`${target.key}::${tableName}`);
+      selectedTableKeys.push(tableKey);
     }
   }
 
@@ -401,14 +349,12 @@ export function buildAutoDatabasePlan(config, selectedTableKeys = [], autoDbCand
     .filter((item) => selectedKeySet.has(item.key))
     .slice(0, maxTables);
   const queries = selectedCandidates.map((item) => {
-      const targetBase = queryTargetBase(item.target, item.engine);
-      const name = sanitizeQueryName(`auto_${item.engine}_${targetBase}_${item.table_name}`);
       const query =
         item.engine === "mongodb"
           ? JSON.stringify({ collection: item.table_name, filter: {}, sort: { _id: -1 }, limit })
           : `SELECT * FROM ${quoteDatabaseIdentifier(item.engine, item.table_name)} LIMIT ${limit}`;
       return {
-        name,
+        table_key: item.key,
         engine: item.engine,
         target: item.target,
         target_label: item.target_label,
@@ -416,7 +362,7 @@ export function buildAutoDatabasePlan(config, selectedTableKeys = [], autoDbCand
         query,
         limit,
       };
-    });
+  });
 
   return {
     queries,
@@ -435,7 +381,10 @@ function generatedDatabasePlan(queries) {
       continue;
     }
     const target = query.target;
-    const key = String(target.key || `${query.engine}:${query.target_label || query.name}`);
+    const key = String(target.key || target.connection_url || "").trim();
+    if (!key) {
+      continue;
+    }
     if (!entriesByTarget.has(key)) {
       const entry = { connection_url: target.connection_url, tables: [] };
       entriesByTarget.set(key, entry);

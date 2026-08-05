@@ -79,6 +79,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
   const knowledgeDatabase = Number(knowledgeStats.database || 0);
   const knowledgeRemote = Number(knowledgeStats.remote || 0);
   const skillNames = enabledSkills.map((skill) => skill.name).join(", ") || "none";
+  const activeVila = String(config.vila?.active || "").trim();
 
   ctx.log(
     pick(
@@ -88,7 +89,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `聊天服务已启动: http://127.0.0.1:${service.port}`,
         `健康检查: http://127.0.0.1:${service.port}/health`,
         `预览: http://127.0.0.1:${service.port}/widget`,
-        `聊天接口: POST http://127.0.0.1:${service.port}/openvila/chat`,
+        ...(activeVila ? [`当前 Vila: ${activeVila}`] : []),
         `Telegram 人工接管轮询: ${service.telegram_polling ? "已启用" : "未启用"}`,
         `知识库文档：文件=${knowledgeFiles}, 数据库=${knowledgeDatabase}, 远程=${knowledgeRemote}`,
         `已激活技能: ${skillNames}`,
@@ -100,7 +101,7 @@ export async function runRun(ctx, argv, dependencies = {}) {
         `Chat service started: http://127.0.0.1:${service.port}`,
         `Health: http://127.0.0.1:${service.port}/health`,
         `Preview: http://127.0.0.1:${service.port}/widget`,
-        `Chat API: POST http://127.0.0.1:${service.port}/openvila/chat`,
+        ...(activeVila ? [`Active Vila: ${activeVila}`] : []),
         `Telegram handoff polling: ${service.telegram_polling ? "enabled" : "disabled"}`,
         `Knowledge documents: files=${knowledgeFiles}, database=${knowledgeDatabase}, remote=${knowledgeRemote}`,
         `Enabled skills: ${skillNames}`,

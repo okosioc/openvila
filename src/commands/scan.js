@@ -180,8 +180,8 @@ async function editGeneratedScanPlan(ctx, plan, config, options, prepareScanPlan
   const refreshedPlan = await prepareScanPlan(ctx.cwd, {
     config,
     skipDatabase: options.skipDatabase,
+    skipFilesystem: options.skipFilesystem,
     skipRemote: options.skipRemote,
-    resetPlan: false,
     scanPlan: editedPlan,
   });
 
@@ -197,11 +197,11 @@ export async function runScan(ctx, argv, dependencies = {}) {
   const saveScanPlan = dependencies.saveKnowledgeScanPlan || saveKnowledgeScanPlan;
   const editPlanText = dependencies.editScanPlanText || ctx.editScanPlanText || editTextInEditor;
 
-  try {
     const dryRun = Boolean(argv.options["dry-run"]);
     const assumeYes = Boolean(argv.options.yes);
     const reset = Boolean(argv.options.reset);
     const skipDatabase = Boolean(argv.options["no-db"]);
+    const skipFilesystem = Boolean(argv.options["no-filesystem"]);
     const skipRemote = Boolean(argv.options["no-remote"]);
     const config = await loadRuntimeConfig(ctx.cwd, { createIfMissing: false });
 
@@ -209,14 +209,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
       log(pick(ctx.locale, `[scan] 日志文件: ${ctx.logFilePath}`, `[scan] Log file: ${ctx.logFilePath}`));
     }
 
-    log(
-      pick(
-        ctx.locale,
-        "[scan] 1/6 生成扫描计划中...",
-        "[scan] 1/6 Building scan plan...",
-      ),
-    );
-    let plan = await prepareScanPlan(ctx.cwd, { config, skipDatabase, skipRemote, resetPlan: reset });
+    let plan = await prepareScanPlan(ctx.cwd, { config, skipDatabase, skipFilesystem, skipRemote });
 
     if (dryRun) {
       log(renderScanPlan(ctx, plan));
@@ -229,7 +222,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
     while (!selections && !cancelled) {
       log(renderScanPlan(ctx, plan));
       const defaults = {
-        filesystem: !Boolean(argv.options["no-filesystem"]),
+        filesystem: !skipFilesystem,
         database: plan.database.queries.length > 0 && !skipDatabase,
         remote: plan.remote.enabled && !skipRemote,
       };
@@ -237,7 +230,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
       if (!confirmed) {
         cancelled = true;
       } else if (confirmed.edit) {
-        plan = await editGeneratedScanPlan(ctx, plan, config, { skipDatabase, skipRemote }, prepareScanPlan, editPlanText);
+        plan = await editGeneratedScanPlan(ctx, plan, config, { skipDatabase, skipFilesystem, skipRemote }, prepareScanPlan, editPlanText);
       } else {
         selections = confirmed;
       }
@@ -282,7 +275,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
           "[scan] 6/6 汇总",
           `- 扫描文档数: ${result.scanned}`,
           `- 编译文档数: ${result.compiled}`,
-          `- 知识库更新: ${reset ? "全量编译（scan-plan 已重建）" : "增量"}`,
+          `- 知识库更新: ${reset ? "全量编译" : "增量"}`,
           `- 变更: 新增=${result.changes?.added ?? 0}, 修改=${result.changes?.changed ?? 0}, 删除=${result.changes?.deleted ?? 0}, 未变=${result.changes?.unchanged ?? 0}`,
           `- 高频文档数: ${result.changes?.frequent_doc_count ?? 0}`,
           `- 来源统计: 文件=${result.source_stats.filesystem}, 数据库=${result.source_stats.database}, 远程=${result.source_stats.remote}`,
@@ -295,7 +288,7 @@ export async function runScan(ctx, argv, dependencies = {}) {
           "[scan] 6/6 Summary",
           `- scanned docs: ${result.scanned}`,
           `- compiled docs: ${result.compiled}`,
-          `- knowledge_update: ${reset ? "full rebuild (scan-plan regenerated)" : "incremental"}`,
+          `- knowledge_update: ${reset ? "full rebuild" : "incremental"}`,
           `- changes: added=${result.changes?.added ?? 0}, changed=${result.changes?.changed ?? 0}, deleted=${result.changes?.deleted ?? 0}, unchanged=${result.changes?.unchanged ?? 0}`,
           `- frequent_docs: ${result.changes?.frequent_doc_count ?? 0}`,
           `- source_stats: fs=${result.source_stats.filesystem}, db=${result.source_stats.database}, remote=${result.source_stats.remote}`,
@@ -305,7 +298,4 @@ export async function runScan(ctx, argv, dependencies = {}) {
         ].join("\n"),
       ),
     );
-  } catch (error) {
-    throw error;
-  }
 }

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import sqlite3 from "sqlite3";
-import { buildKnowledgeBase, prepareKnowledgeScanPlan, saveKnowledgeScanPlan } from "../../src/core/knowledge.js";
+import { buildKnowledgeBase, loadDocContents, prepareKnowledgeScanPlan, saveKnowledgeScanPlan } from "../../src/core/knowledge.js";
 import { defaultConfig, initializeRuntime, runtimePaths } from "../../src/core/runtime.js";
 import { collectAutoDatabaseCandidates, generatedScanPlan, parseKnowledgeScanPlan, stringifyKnowledgeScanPlan } from "../../src/core/scan-plan.js";
 import { resolveDatabaseTarget } from "../../src/utils/db.js";
@@ -42,6 +42,28 @@ async function createSqliteDatabase(filePath) {
   });
 }
 
+async function insertSqlitePost(filePath, title) {
+  await new Promise((resolve, reject) => {
+    const database = new sqlite3.Database(filePath, (openError) => {
+      if (openError) {
+        reject(openError);
+        return;
+      }
+      database.run("INSERT INTO posts (title) VALUES (?)", [title], (insertError) => {
+        database.close((closeError) => {
+          if (insertError) {
+            reject(insertError);
+          } else if (closeError) {
+            reject(closeError);
+          } else {
+            resolve();
+          }
+        });
+      });
+    });
+  });
+}
+
 async function startLlmServer(options = {}) {
   const requests = [];
   const server = http.createServer(async (request, response) => {
@@ -49,36 +71,26 @@ async function startLlmServer(options = {}) {
     requests.push(body);
     const isDocCompiler = String(body?.messages?.[0]?.content || "").includes("website knowledge document compiler");
     response.writeHead(200, { "Content-Type": "application/json" });
-    response.end(
-      JSON.stringify({
-        choices: [
-          {
-            finish_reason: options.finishReason || "stop",
-            message: {
-              content: JSON.stringify(
-                isDocCompiler
-                  ? {
-                      docs: [{
-                        id: "d1",
-                        title: "FAQ",
-                        tags: ["vip"],
-                        summary: "VIP information.",
-                        body: options.compilerBody || "Read the VIP information.",
-                        is_frequently_asked: true,
-                      }],
-                    }
-                  : {
-                      framework: "static",
-                      framework_signals: ["faq.html"],
-                      knowledge_files: ["faq.html", "guide.md", "app.ts", "visible.draft.md"],
-                      knowledge_tables: [],
-                    },
-              ),
-            },
-          },
-        ],
-      }),
-    );
+    const input = String(body?.messages?.[1]?.content || "");
+    const documentIds = [...input.matchAll(/^##\s+(d\d+)\s*$/gm)].map((match) => match[1]);
+    const content = isDocCompiler
+      ? {
+          docs: (documentIds.length > 0 ? documentIds : ["d1"]).map((id) => ({
+            id,
+            title: "FAQ",
+            tags: ["vip"],
+            summary: "VIP information.",
+            body: options.compilerBody || "Read the VIP information.",
+            is_frequently_asked: true,
+          })),
+        }
+      : {
+          framework: "static",
+          framework_signals: ["faq.html"],
+          knowledge_files: ["faq.html", "guide.md", "app.ts", "visible.draft.md"],
+          knowledge_tables: [],
+        };
+    response.end(JSON.stringify({ choices: [{ finish_reason: options.finishReason || "stop", message: { content: JSON.stringify(content) } }] }));
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -197,6 +209,28 @@ test("prepareKnowledgeScanPlan excludes gitignored styles and multimedia candida
   const scanPlanPath = await saveKnowledgeScanPlan(cwd, plan);
   assert.equal(path.basename(scanPlanPath), "scan-plan");
   assert.match(await fs.readFile(scanPlanPath, "utf8"), /^file:\/\/faq\.html/m);
+});
+
+test("prepareKnowledgeScanPlan skips filesystem candidates when requested", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  context.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+
+  const plan = await prepareKnowledgeScanPlan(cwd, {
+    config: {
+      llm: {
+        endpoint: "http://127.0.0.1:1",
+        api_key: "test-key",
+        model: "test-model",
+      },
+      scan: {},
+    },
+    skipFilesystem: true,
+  });
+
+  assert.equal(plan.filesystem.total_candidates, 0);
+  assert.deepEqual(plan.filesystem.matched_paths, []);
+  assert.deepEqual(plan.generated_scan_plan, { files: [] });
 });
 
 test("prepareKnowledgeScanPlan reports a truncated planning response", async (context) => {
@@ -323,7 +357,7 @@ test("buildKnowledgeBase records no planning call when reusing an unchanged scan
   await assert.rejects(fs.access(path.join(knowledges, "docs", ".fs-faq-html.md.scan-a4f9e.tmp")), { code: "ENOENT" });
 });
 
-test("buildKnowledgeBase recompiles unchanged sources when reset is set", async (context) => {
+test("buildKnowledgeBase recompiles an unchanged source when its compiled document is missing", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   const llm = await startLlmServer();
   context.after(async () => {
@@ -332,7 +366,63 @@ test("buildKnowledgeBase recompiles unchanged sources when reset is set", async 
   });
 
   await initializeRuntime(cwd);
+  const paths = runtimePaths(cwd);
+  const content = "<h1>FAQ</h1>";
+  const sourceHash = crypto.createHash("sha1").update(`filesystem\nfaq.html\n${content}`).digest("hex");
+  await fs.writeFile(path.join(cwd, "faq.html"), content);
+  await fs.writeFile(
+    paths.knowledgeManifest,
+    `${JSON.stringify({
+      source_hashes: { "faq.html": sourceHash },
+      source_doc_map: { "faq.html": "docs/fs-faq-html.md" },
+      index_map: {
+        "faq.html": {
+          doc_path: "docs/fs-faq-html.md",
+          title: "FAQ",
+          summary: "Frequently asked questions.",
+          tags: ["faq"],
+          updated_at: "2026-01-01T00:00:00.000Z",
+          is_frequently_asked: false,
+        },
+      },
+    }, null, 2)}\n`,
+  );
+
+  const result = await buildKnowledgeBase(cwd, {
+    config: {
+      llm: {
+        endpoint: llm.endpoint,
+        api_key: "test-key",
+        model: "test-model",
+      },
+      scan: {},
+    },
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: ["faq.html"] },
+      database: { queries: [] },
+      remote: { enabled: false },
+    },
+  });
+
+  assert.equal(result.compiled, 1);
+  assert.match(await fs.readFile(path.join(paths.knowledgeDocs, "fs-faq-html.md"), "utf8"), /Read the VIP information/);
+});
+
+test("buildKnowledgeBase reuses scan plan and recompiles unchanged sources when reset is set", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  await initializeRuntime(cwd);
+  const paths = runtimePaths(cwd);
   await fs.writeFile(path.join(cwd, "faq.html"), "<h1>FAQ</h1>");
+  await fs.writeFile(paths.scanPlan, "file://faq.html\n");
   const config = {
     llm: {
       endpoint: llm.endpoint,
@@ -351,7 +441,7 @@ test("buildKnowledgeBase recompiles unchanged sources when reset is set", async 
   };
 
   await buildKnowledgeBase(cwd, { config, plan });
-  const result = await buildKnowledgeBase(cwd, { config, plan, reset: true });
+  const result = await buildKnowledgeBase(cwd, { config, reset: true });
   const compilerRequests = llm.requests.filter((request) =>
     String(request?.messages?.[0]?.content || "").includes("website knowledge document compiler"),
   );
@@ -360,6 +450,7 @@ test("buildKnowledgeBase recompiles unchanged sources when reset is set", async 
   assert.equal(result.changes.added, 1);
   assert.equal(result.changes.unchanged, 0);
   assert.equal(compilerRequests.length, 2);
+  assert.equal(llm.requests.length, 2);
 });
 
 test("buildKnowledgeBase preserves the previous knowledge base when reset compilation fails", async (context) => {
@@ -569,6 +660,71 @@ test("buildKnowledgeBase fetches remote URLs from a scan plan", async (context) 
   assert.match(compilerRequest.messages[1].content, /Remote FAQ/);
 });
 
+test("buildKnowledgeBase preserves remote documents when fetching fails", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const remotePage = await startRemotePageServer();
+  const remoteUrl = remotePage.url;
+  context.after(() => fs.rm(cwd, { recursive: true, force: true }));
+
+  await initializeRuntime(cwd);
+  const paths = runtimePaths(cwd);
+  await remotePage.close();
+  await Promise.all([
+    fs.writeFile(path.join(paths.knowledgeDocs, "remote-example-faq.md"), "# Remote FAQ\n"),
+    fs.writeFile(
+      paths.knowledgeManifest,
+      `${JSON.stringify({
+        source_hashes: { [remoteUrl]: "remote-hash" },
+        source_doc_map: { [remoteUrl]: "docs/remote-example-faq.md" },
+        index_map: {
+          [remoteUrl]: {
+            doc_path: "docs/remote-example-faq.md",
+            title: "Remote FAQ",
+            summary: "Remote support information.",
+            tags: ["faq"],
+            updated_at: "2026-01-01T00:00:00.000Z",
+            is_frequently_asked: false,
+          },
+        },
+      }, null, 2)}\n`,
+    ),
+  ]);
+
+  const result = await buildKnowledgeBase(cwd, {
+    config: { scan: {} },
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: [] },
+      database: { queries: [] },
+      remote: { enabled: true, sitemap_url: "", urls: [remoteUrl], max_pages: 1 },
+    },
+    selections: { filesystem: false, database: false, remote: true },
+  });
+
+  assert.equal(result.compiled, 0);
+  assert.equal(result.changes.deleted, 0);
+  assert.equal(result.changes.unchanged, 1);
+  assert.match(result.warnings[0], /remote page failed/);
+  assert.equal(await fs.readFile(path.join(paths.knowledgeDocs, "remote-example-faq.md"), "utf8"), "# Remote FAQ\n");
+});
+
+test("loadDocContents rejects paths outside the knowledge docs folder", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  context.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const paths = runtimePaths(cwd);
+  await fs.mkdir(paths.knowledgeDocs, { recursive: true });
+  await Promise.all([
+    fs.writeFile(path.join(paths.knowledgeDocs, "allowed.md"), "Allowed knowledge."),
+    fs.writeFile(path.join(paths.base, "secret.md"), "Secret runtime data."),
+  ]);
+
+  const docs = await loadDocContents(cwd, ["docs/allowed.md", "docs/../../secret.md"]);
+
+  assert.deepEqual(docs, [{ doc_path: "docs/allowed.md", content: "Allowed knowledge." }]);
+});
+
 test("prepareKnowledgeScanPlan previews an in-memory edited scan plan", async (context) => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
   context.after(() => fs.rm(cwd, { recursive: true, force: true }));
@@ -683,6 +839,70 @@ test("database targets retain a connection URL and normalized key", () => {
   });
 
   assert.equal(mongoTarget.key, "mongodb://localhost:27017/girlatlas");
+});
+
+test("buildKnowledgeBase keeps same-id rows from separate database targets", async (context) => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "openvila-knowledge-test-"));
+  const llm = await startLlmServer();
+  context.after(async () => {
+    await llm.close();
+    await fs.rm(cwd, { recursive: true, force: true });
+  });
+
+  const firstPath = path.join(cwd, "first.db");
+  const secondPath = path.join(cwd, "second.db");
+  await initializeRuntime(cwd);
+  await createSqliteDatabase(firstPath);
+  await createSqliteDatabase(secondPath);
+  await insertSqlitePost(firstPath, "First database post");
+  await insertSqlitePost(secondPath, "Second database post");
+
+  const firstTarget = resolveDatabaseTarget(cwd, { connection_url: "sqlite://first.db" });
+  const secondTarget = resolveDatabaseTarget(cwd, { connection_url: "sqlite://second.db" });
+  const result = await buildKnowledgeBase(cwd, {
+    config: {
+      llm: {
+        endpoint: llm.endpoint,
+        api_key: "test-key",
+        model: "test-model",
+      },
+      scan: {},
+    },
+    plan: {
+      planning_mode: "plan",
+      framework: "unknown",
+      framework_signals: [],
+      filesystem: { matched_paths: [] },
+      database: {
+        queries: [
+          {
+            table_key: "sqlite://first.db::posts",
+            engine: "sqlite",
+            target: firstTarget,
+            table_name: "posts",
+            query: "SELECT * FROM \"posts\" LIMIT 80",
+            limit: 80,
+          },
+          {
+            table_key: "sqlite://second.db::posts",
+            engine: "sqlite",
+            target: secondTarget,
+            table_name: "posts",
+            query: "SELECT * FROM \"posts\" LIMIT 80",
+            limit: 80,
+          },
+        ],
+      },
+      remote: { enabled: false },
+    },
+    selections: { filesystem: false, database: true, remote: false },
+  });
+
+  const manifest = JSON.parse(await fs.readFile(result.paths.knowledgeManifest, "utf8"));
+  assert.equal(result.scanned, 2);
+  assert.equal(result.compiled, 2);
+  assert.equal(Object.keys(manifest.source_doc_map).length, 2);
+  assert.equal(new Set(Object.values(manifest.source_doc_map)).size, 2);
 });
 
 test("prepareKnowledgeScanPlan disables sitemap and scan-plan remote pages when skipRemote is set", async (context) => {
