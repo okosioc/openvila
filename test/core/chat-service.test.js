@@ -495,9 +495,11 @@ test("chat streams LLM answer chunks before persisting the completed reply", asy
     assert.equal(llm.requests[0].max_tokens, 4096);
     assert.equal(llm.requests[1].max_tokens, 4096);
     assert.match(llm.requests[0].messages[0].content, /If an enabled skill directly fulfills the visitor's task/);
+    assert.match(llm.requests[0].messages[0].content, /never include internal document paths such as docs\/\.\.\. in direct_answer/);
     assert.match(llm.requests[0].messages[0].content, /use its exact URL in a Markdown link with text that fits direct_answer/);
     assert.match(llm.requests[0].messages[0].content, /choose the 1 or 2 documents from Document index that best answer the visitor's question using Recent chat history/);
     assert.match(llm.requests[1].messages[0].content, /selected documents contain a relevant complete Markdown link/);
+    assert.match(llm.requests[1].messages[0].content, /never include internal document paths such as docs\/\.\.\. in your answer/);
     assert.match(llm.requests[1].messages[0].content, /Rules:\n\(1\).*\n\(2\).*\n\(3\)/s);
     assert.match(llm.requests[1].messages[0].content, /answer the user's question according to their intent/i);
     assert.match(llm.requests[1].messages[1].content, /\[Buy VIP\]\(\/dash\/buy-vip\)/);

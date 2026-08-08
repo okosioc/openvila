@@ -301,8 +301,8 @@ location /openvila/ {
   proxy_set_header Host $host;
 }
 
-location = /openvila/chat {
-  proxy_pass http://127.0.0.1:9394;
+location = /openvila/health {
+  proxy_pass http://127.0.0.1:9394/health;
   proxy_set_header Host $host;
 }
 
@@ -313,6 +313,8 @@ location /openvila/chat/ {
   proxy_set_header Host $host;
 }
 ```
+
+The general `/openvila/` proxy preserves request paths, so it serves the Widget, Vila assets, and other `/openvila/...` routes. Health checks use the local `/health` route instead; the exact `/openvila/health` mapping above exposes it safely without changing the Widget or chat paths. It returns service availability and the current time.
 
 The widget subscribes to `GET /openvila/chat/events?session_id=...`. During knowledge-based answers, OpenVila forwards LLM output chunks through SSE so the widget renders Vila's reply as it is generated, then persists and broadcasts the completed message. Every persisted visitor, Vila, and support message is broadcast to all open widgets for the same session. OpenVila processes each session serially so messages from multiple windows retain a consistent conversation history. The widget also refreshes history every 3 seconds when SSE reconnects or is unavailable.
 
